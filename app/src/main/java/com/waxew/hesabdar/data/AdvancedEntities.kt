@@ -134,8 +134,17 @@ interface LedgerDao {
     @Query("SELECT * FROM ledger_accounts ORDER BY code")
     fun observeAccounts(): Flow<List<LedgerAccountEntity>>
 
+    @Query("SELECT * FROM ledger_accounts WHERE code=:code LIMIT 1")
+    suspend fun getByCode(code: String): LedgerAccountEntity?
+
+    @Query("SELECT COUNT(*) FROM ledger_accounts")
+    suspend fun countAccounts(): Int
+
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertAccount(account: LedgerAccountEntity): Long
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertAccounts(accounts: List<LedgerAccountEntity>): List<Long>
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertDocument(document: JournalDocumentEntity): Long
@@ -145,6 +154,12 @@ interface LedgerDao {
 
     @Query("SELECT * FROM journal_documents ORDER BY createdAt DESC, id DESC")
     fun observeDocuments(): Flow<List<JournalDocumentEntity>>
+
+    @Query("SELECT * FROM journal_lines WHERE documentId=:documentId ORDER BY id")
+    fun observeLines(documentId: Long): Flow<List<JournalLineEntity>>
+
+    @Query("SELECT COALESCE(SUM(debit-credit),0) FROM journal_lines WHERE accountId=:accountId")
+    fun observeAccountBalance(accountId: Long): Flow<Long>
 }
 
 @Dao
