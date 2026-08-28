@@ -16,12 +16,6 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 
-/**
- * طرف حساب محلی.
- *
- * نکته مهم: مانده حساب عمداً در این جدول ذخیره نمی‌شود. مانده در نسخه‌های بعدی از
- * اسناد، فاکتورها و پرداخت‌ها محاسبه می‌شود تا یک عدد دستی با گردش واقعی اختلاف پیدا نکند.
- */
 @Entity(tableName = "persons")
 data class PersonEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -29,10 +23,6 @@ data class PersonEntity(
     val phone: String = ""
 )
 
-/**
- * کالای پایه برنامه.
- * تمام مبالغ پولی با Long ذخیره می‌شوند و stock تعداد موجودی فعلی را نگهداری می‌کند.
- */
 @Entity(tableName = "products")
 data class ProductEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -42,20 +32,9 @@ data class ProductEntity(
     val stock: Long = 0
 )
 
-/**
- * سربرگ فاکتور خرید یا فروش.
- * type در حال حاضر یکی از SALE یا PURCHASE است و paidAmount بخش تسویه‌شده همان فاکتور است.
- */
 @Entity(
     tableName = "invoices",
-    foreignKeys = [
-        ForeignKey(
-            entity = PersonEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["personId"],
-            onDelete = ForeignKey.SET_NULL
-        )
-    ],
+    foreignKeys = [ForeignKey(entity = PersonEntity::class, parentColumns = ["id"], childColumns = ["personId"], onDelete = ForeignKey.SET_NULL)],
     indices = [Index("personId")]
 )
 data class InvoiceEntity(
@@ -68,25 +47,11 @@ data class InvoiceEntity(
     val createdAt: Long = System.currentTimeMillis()
 )
 
-/**
- * ردیف فاکتور.
- * نام کالا و قیمت زمان ثبت، Snapshot می‌شوند تا تغییر نام یا قیمت آینده تاریخچه فاکتور را خراب نکند.
- */
 @Entity(
     tableName = "invoice_items",
     foreignKeys = [
-        ForeignKey(
-            entity = InvoiceEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["invoiceId"],
-            onDelete = ForeignKey.CASCADE
-        ),
-        ForeignKey(
-            entity = ProductEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["productId"],
-            onDelete = ForeignKey.SET_NULL
-        )
+        ForeignKey(entity = InvoiceEntity::class, parentColumns = ["id"], childColumns = ["invoiceId"], onDelete = ForeignKey.CASCADE),
+        ForeignKey(entity = ProductEntity::class, parentColumns = ["id"], childColumns = ["productId"], onDelete = ForeignKey.SET_NULL)
     ],
     indices = [Index("invoiceId"), Index("productId")]
 )
@@ -100,25 +65,11 @@ data class InvoiceItemEntity(
     val lineTotal: Long
 )
 
-/**
- * دریافت یا پرداخت وجه.
- * direction یکی از RECEIVE یا PAY است. ارتباط با فاکتور اختیاری است تا بعداً دریافت/پرداخت آزاد هم داشته باشیم.
- */
 @Entity(
     tableName = "payments",
     foreignKeys = [
-        ForeignKey(
-            entity = InvoiceEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["invoiceId"],
-            onDelete = ForeignKey.SET_NULL
-        ),
-        ForeignKey(
-            entity = PersonEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["personId"],
-            onDelete = ForeignKey.SET_NULL
-        )
+        ForeignKey(entity = InvoiceEntity::class, parentColumns = ["id"], childColumns = ["invoiceId"], onDelete = ForeignKey.SET_NULL),
+        ForeignKey(entity = PersonEntity::class, parentColumns = ["id"], childColumns = ["personId"], onDelete = ForeignKey.SET_NULL)
     ],
     indices = [Index("invoiceId"), Index("personId")]
 )
@@ -132,25 +83,11 @@ data class PaymentEntity(
     val createdAt: Long = System.currentTimeMillis()
 )
 
-/**
- * کارتکس انبار.
- * quantityDelta برای ورود کالا مثبت و برای خروج کالا منفی است؛ بنابراین دلیل هر تغییر موجودی قابل ردیابی می‌ماند.
- */
 @Entity(
     tableName = "inventory_movements",
     foreignKeys = [
-        ForeignKey(
-            entity = ProductEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["productId"],
-            onDelete = ForeignKey.CASCADE
-        ),
-        ForeignKey(
-            entity = InvoiceEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["invoiceId"],
-            onDelete = ForeignKey.SET_NULL
-        )
+        ForeignKey(entity = ProductEntity::class, parentColumns = ["id"], childColumns = ["productId"], onDelete = ForeignKey.CASCADE),
+        ForeignKey(entity = InvoiceEntity::class, parentColumns = ["id"], childColumns = ["invoiceId"], onDelete = ForeignKey.SET_NULL)
     ],
     indices = [Index("productId"), Index("invoiceId")]
 )
@@ -163,7 +100,6 @@ data class InventoryMovementEntity(
     val createdAt: Long = System.currentTimeMillis()
 )
 
-/** DAO طرف حساب‌ها؛ رابط مستقیم لایه داده با جدول persons. */
 @Dao
 interface PersonDao {
     @Query("SELECT * FROM persons ORDER BY id DESC")
@@ -176,7 +112,6 @@ interface PersonDao {
     suspend fun insert(person: PersonEntity): Long
 }
 
-/** DAO کالا و موجودی. تغییر موجودی از طریق AccountingRepository و داخل Transaction انجام می‌شود. */
 @Dao
 interface ProductDao {
     @Query("SELECT * FROM products ORDER BY id DESC")
@@ -192,7 +127,6 @@ interface ProductDao {
     suspend fun adjustStock(productId: Long, delta: Long)
 }
 
-/** DAO فاکتورها و ردیف‌های فاکتور. */
 @Dao
 interface InvoiceDao {
     @Query("SELECT * FROM invoices ORDER BY createdAt DESC, id DESC")
@@ -205,7 +139,6 @@ interface InvoiceDao {
     suspend fun insertItems(items: List<InvoiceItemEntity>)
 }
 
-/** DAO دریافت‌ها و پرداخت‌ها. */
 @Dao
 interface PaymentDao {
     @Query("SELECT * FROM payments ORDER BY createdAt DESC, id DESC")
@@ -215,7 +148,6 @@ interface PaymentDao {
     suspend fun insert(payment: PaymentEntity): Long
 }
 
-/** DAO کارتکس انبار. */
 @Dao
 interface InventoryDao {
     @Query("SELECT * FROM inventory_movements ORDER BY createdAt DESC, id DESC")
@@ -225,10 +157,6 @@ interface InventoryDao {
     suspend fun insert(movement: InventoryMovementEntity): Long
 }
 
-/**
- * Queryهای خلاصه داشبورد.
- * COALESCE باعث می‌شود دیتابیس خالی به جای null مقدار صفر برگرداند.
- */
 @Dao
 interface DashboardDao {
     @Query("SELECT COALESCE(SUM(totalAmount), 0) FROM invoices WHERE type = 'SALE'")
@@ -244,10 +172,6 @@ interface DashboardDao {
     fun observePayables(): Flow<Long>
 }
 
-/**
- * دیتابیس اصلی حسابدار.
- * نسخه 2 چهار جدول عملیاتی فاکتور، ردیف فاکتور، پرداخت و کارتکس انبار را بدون حذف داده نسخه 1 اضافه می‌کند.
- */
 @Database(
     entities = [
         PersonEntity::class,
@@ -255,9 +179,17 @@ interface DashboardDao {
         InvoiceEntity::class,
         InvoiceItemEntity::class,
         PaymentEntity::class,
-        InventoryMovementEntity::class
+        InventoryMovementEntity::class,
+        TreasuryAccountEntity::class,
+        LedgerAccountEntity::class,
+        JournalDocumentEntity::class,
+        JournalLineEntity::class,
+        CheckEntity::class,
+        InstallmentEntity::class,
+        CashEntryEntity::class,
+        AuditLogEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -267,96 +199,61 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun paymentDao(): PaymentDao
     abstract fun inventoryDao(): InventoryDao
     abstract fun dashboardDao(): DashboardDao
+    abstract fun treasuryDao(): TreasuryDao
+    abstract fun ledgerDao(): LedgerDao
+    abstract fun checkDao(): CheckDao
+    abstract fun installmentDao(): InstallmentDao
+    abstract fun cashEntryDao(): CashEntryDao
+    abstract fun auditDao(): AuditDao
 
     companion object {
-        /** Singleton مانع ساخته‌شدن چند نمونه همزمان از دیتابیس در Process برنامه می‌شود. */
-        @Volatile
-        private var instance: AppDatabase? = null
+        @Volatile private var instance: AppDatabase? = null
 
-        /**
-         * Migration واقعی 1 به 2؛ هیچ جدول قدیمی حذف یا بازسازی نمی‌شود و اطلاعات اشخاص و کالاها حفظ می‌شوند.
-         */
         private val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL(
-                    """
-                    CREATE TABLE IF NOT EXISTS `invoices` (
-                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
-                        `type` TEXT NOT NULL,
-                        `personId` INTEGER,
-                        `totalAmount` INTEGER NOT NULL,
-                        `paidAmount` INTEGER NOT NULL,
-                        `note` TEXT NOT NULL,
-                        `createdAt` INTEGER NOT NULL,
-                        FOREIGN KEY(`personId`) REFERENCES `persons`(`id`) ON UPDATE NO ACTION ON DELETE SET NULL
-                    )
-                    """.trimIndent()
-                )
+                db.execSQL("CREATE TABLE IF NOT EXISTS `invoices` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `type` TEXT NOT NULL, `personId` INTEGER, `totalAmount` INTEGER NOT NULL, `paidAmount` INTEGER NOT NULL, `note` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, FOREIGN KEY(`personId`) REFERENCES `persons`(`id`) ON UPDATE NO ACTION ON DELETE SET NULL)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_invoices_personId` ON `invoices` (`personId`)")
-
-                db.execSQL(
-                    """
-                    CREATE TABLE IF NOT EXISTS `invoice_items` (
-                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
-                        `invoiceId` INTEGER NOT NULL,
-                        `productId` INTEGER,
-                        `productNameSnapshot` TEXT NOT NULL,
-                        `quantity` INTEGER NOT NULL,
-                        `unitPrice` INTEGER NOT NULL,
-                        `lineTotal` INTEGER NOT NULL,
-                        FOREIGN KEY(`invoiceId`) REFERENCES `invoices`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE,
-                        FOREIGN KEY(`productId`) REFERENCES `products`(`id`) ON UPDATE NO ACTION ON DELETE SET NULL
-                    )
-                    """.trimIndent()
-                )
+                db.execSQL("CREATE TABLE IF NOT EXISTS `invoice_items` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `invoiceId` INTEGER NOT NULL, `productId` INTEGER, `productNameSnapshot` TEXT NOT NULL, `quantity` INTEGER NOT NULL, `unitPrice` INTEGER NOT NULL, `lineTotal` INTEGER NOT NULL, FOREIGN KEY(`invoiceId`) REFERENCES `invoices`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE, FOREIGN KEY(`productId`) REFERENCES `products`(`id`) ON UPDATE NO ACTION ON DELETE SET NULL)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_invoice_items_invoiceId` ON `invoice_items` (`invoiceId`)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_invoice_items_productId` ON `invoice_items` (`productId`)")
-
-                db.execSQL(
-                    """
-                    CREATE TABLE IF NOT EXISTS `payments` (
-                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
-                        `direction` TEXT NOT NULL,
-                        `invoiceId` INTEGER,
-                        `personId` INTEGER,
-                        `amount` INTEGER NOT NULL,
-                        `note` TEXT NOT NULL,
-                        `createdAt` INTEGER NOT NULL,
-                        FOREIGN KEY(`invoiceId`) REFERENCES `invoices`(`id`) ON UPDATE NO ACTION ON DELETE SET NULL,
-                        FOREIGN KEY(`personId`) REFERENCES `persons`(`id`) ON UPDATE NO ACTION ON DELETE SET NULL
-                    )
-                    """.trimIndent()
-                )
+                db.execSQL("CREATE TABLE IF NOT EXISTS `payments` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `direction` TEXT NOT NULL, `invoiceId` INTEGER, `personId` INTEGER, `amount` INTEGER NOT NULL, `note` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, FOREIGN KEY(`invoiceId`) REFERENCES `invoices`(`id`) ON UPDATE NO ACTION ON DELETE SET NULL, FOREIGN KEY(`personId`) REFERENCES `persons`(`id`) ON UPDATE NO ACTION ON DELETE SET NULL)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_payments_invoiceId` ON `payments` (`invoiceId`)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_payments_personId` ON `payments` (`personId`)")
-
-                db.execSQL(
-                    """
-                    CREATE TABLE IF NOT EXISTS `inventory_movements` (
-                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
-                        `productId` INTEGER NOT NULL,
-                        `invoiceId` INTEGER,
-                        `movementType` TEXT NOT NULL,
-                        `quantityDelta` INTEGER NOT NULL,
-                        `createdAt` INTEGER NOT NULL,
-                        FOREIGN KEY(`productId`) REFERENCES `products`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE,
-                        FOREIGN KEY(`invoiceId`) REFERENCES `invoices`(`id`) ON UPDATE NO ACTION ON DELETE SET NULL
-                    )
-                    """.trimIndent()
-                )
+                db.execSQL("CREATE TABLE IF NOT EXISTS `inventory_movements` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `productId` INTEGER NOT NULL, `invoiceId` INTEGER, `movementType` TEXT NOT NULL, `quantityDelta` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, FOREIGN KEY(`productId`) REFERENCES `products`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE, FOREIGN KEY(`invoiceId`) REFERENCES `invoices`(`id`) ON UPDATE NO ACTION ON DELETE SET NULL)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_inventory_movements_productId` ON `inventory_movements` (`productId`)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_inventory_movements_invoiceId` ON `inventory_movements` (`invoiceId`)")
             }
         }
 
-        /** ساخت یا دریافت Singleton دیتابیس همراه با Migrationهای مجاز. */
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS `treasury_accounts` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `type` TEXT NOT NULL, `openingBalance` INTEGER NOT NULL, `isActive` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS `ledger_accounts` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `code` TEXT NOT NULL, `name` TEXT NOT NULL, `level` TEXT NOT NULL, `parentId` INTEGER, `nature` TEXT NOT NULL, `isActive` INTEGER NOT NULL)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_ledger_accounts_code` ON `ledger_accounts` (`code`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_ledger_accounts_parentId` ON `ledger_accounts` (`parentId`)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS `journal_documents` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `number` TEXT NOT NULL, `description` TEXT NOT NULL, `sourceType` TEXT NOT NULL, `sourceId` INTEGER, `createdAt` INTEGER NOT NULL, `isPosted` INTEGER NOT NULL)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS `journal_lines` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `documentId` INTEGER NOT NULL, `accountId` INTEGER NOT NULL, `debit` INTEGER NOT NULL, `credit` INTEGER NOT NULL, `description` TEXT NOT NULL, FOREIGN KEY(`documentId`) REFERENCES `journal_documents`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE, FOREIGN KEY(`accountId`) REFERENCES `ledger_accounts`(`id`) ON UPDATE NO ACTION ON DELETE RESTRICT)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_journal_lines_documentId` ON `journal_lines` (`documentId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_journal_lines_accountId` ON `journal_lines` (`accountId`)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS `checks` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `direction` TEXT NOT NULL, `personId` INTEGER, `amount` INTEGER NOT NULL, `bankName` TEXT NOT NULL, `checkNumber` TEXT NOT NULL, `sayadId` TEXT NOT NULL, `dueAt` INTEGER NOT NULL, `status` TEXT NOT NULL, `note` TEXT NOT NULL, `createdAt` INTEGER NOT NULL)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_checks_personId` ON `checks` (`personId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_checks_dueAt` ON `checks` (`dueAt`)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS `installments` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `personId` INTEGER, `invoiceId` INTEGER, `title` TEXT NOT NULL, `amount` INTEGER NOT NULL, `paidAmount` INTEGER NOT NULL, `dueAt` INTEGER NOT NULL, `status` TEXT NOT NULL, `createdAt` INTEGER NOT NULL)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_installments_personId` ON `installments` (`personId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_installments_invoiceId` ON `installments` (`invoiceId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_installments_dueAt` ON `installments` (`dueAt`)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS `cash_entries` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `kind` TEXT NOT NULL, `treasuryAccountId` INTEGER, `personId` INTEGER, `amount` INTEGER NOT NULL, `category` TEXT NOT NULL, `note` TEXT NOT NULL, `createdAt` INTEGER NOT NULL)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_cash_entries_treasuryAccountId` ON `cash_entries` (`treasuryAccountId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_cash_entries_personId` ON `cash_entries` (`personId`)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS `audit_logs` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `action` TEXT NOT NULL, `entityType` TEXT NOT NULL, `entityId` INTEGER, `detail` TEXT NOT NULL, `createdAt` INTEGER NOT NULL)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_audit_logs_entityType` ON `audit_logs` (`entityType`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_audit_logs_entityId` ON `audit_logs` (`entityId`)")
+            }
+        }
+
         fun get(context: Context): AppDatabase = instance ?: synchronized(this) {
-            instance ?: Room.databaseBuilder(
-                context.applicationContext,
-                AppDatabase::class.java,
-                "hesabdar.db"
-            )
-                .addMigrations(MIGRATION_1_2)
+            instance ?: Room.databaseBuilder(context.applicationContext, AppDatabase::class.java, "hesabdar.db")
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                 .build()
                 .also { instance = it }
         }
