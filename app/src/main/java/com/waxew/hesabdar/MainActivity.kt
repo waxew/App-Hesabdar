@@ -14,6 +14,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AccountBalance
 import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Home
@@ -21,7 +22,6 @@ import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -53,15 +53,11 @@ import kotlinx.coroutines.launch
 import java.text.NumberFormat
 import java.util.Locale
 
-/**
- * Activity اصلی برنامه.
- * دیتابیس فقط یک‌بار ساخته می‌شود و Compose رابط RTL حسابدار را نمایش می‌دهد.
- */
+/** Activity اصلی حسابدار؛ تمام اطلاعات عملیاتی از Room محلی خوانده می‌شوند. */
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val database = AppDatabase.get(this)
-
         setContent {
             MaterialTheme {
                 CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
@@ -72,51 +68,29 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-/**
- * پوسته اصلی برنامه و Navigation پایین.
- * فعلاً چهار ناحیه عملیاتی داریم و در نسخه‌های بعد گزارش‌ها و Drawer حرفه‌ای اضافه می‌شوند.
- */
-@OptIn(ExperimentalMaterial3Api::class)
+/** پوسته اصلی نسخه 0.3.0 با پنج ناحیه اصلی. */
 @Composable
 private fun HesabdarApp(database: AppDatabase) {
     var tab by remember { mutableIntStateOf(0) }
-
     val persons by database.personDao().observeAll().collectAsState(initial = emptyList())
     val products by database.productDao().observeAll().collectAsState(initial = emptyList())
     val invoices by database.invoiceDao().observeAll().collectAsState(initial = emptyList())
-
     val salesTotal by database.dashboardDao().observeSalesTotal().collectAsState(initial = 0L)
     val purchasesTotal by database.dashboardDao().observePurchasesTotal().collectAsState(initial = 0L)
     val receivables by database.dashboardDao().observeReceivables().collectAsState(initial = 0L)
     val payables by database.dashboardDao().observePayables().collectAsState(initial = 0L)
+    val expenses by database.cashEntryDao().observeExpenses().collectAsState(initial = 0L)
+    val otherIncome by database.cashEntryDao().observeOtherIncome().collectAsState(initial = 0L)
+    val pendingChecks by database.checkDao().observePending().collectAsState(initial = emptyList())
 
     Scaffold(
         bottomBar = {
             NavigationBar {
-                NavigationBarItem(
-                    selected = tab == 0,
-                    onClick = { tab = 0 },
-                    icon = { Icon(Icons.Default.Home, contentDescription = null) },
-                    label = { Text("خانه") }
-                )
-                NavigationBarItem(
-                    selected = tab == 1,
-                    onClick = { tab = 1 },
-                    icon = { Icon(Icons.Default.People, contentDescription = null) },
-                    label = { Text("اشخاص") }
-                )
-                NavigationBarItem(
-                    selected = tab == 2,
-                    onClick = { tab = 2 },
-                    icon = { Icon(Icons.Default.Inventory2, contentDescription = null) },
-                    label = { Text("کالاها") }
-                )
-                NavigationBarItem(
-                    selected = tab == 3,
-                    onClick = { tab = 3 },
-                    icon = { Icon(Icons.Default.AccountBalanceWallet, contentDescription = null) },
-                    label = { Text("معاملات") }
-                )
+                NavigationBarItem(tab == 0, { tab = 0 }, { Icon(Icons.Default.Home, null) }, label = { Text("خانه") })
+                NavigationBarItem(tab == 1, { tab = 1 }, { Icon(Icons.Default.People, null) }, label = { Text("اشخاص") })
+                NavigationBarItem(tab == 2, { tab = 2 }, { Icon(Icons.Default.Inventory2, null) }, label = { Text("کالا") })
+                NavigationBarItem(tab == 3, { tab = 3 }, { Icon(Icons.Default.AccountBalanceWallet, null) }, label = { Text("معاملات") })
+                NavigationBarItem(tab == 4, { tab = 4 }, { Icon(Icons.Default.AccountBalance, null) }, label = { Text("حسابداری") })
             }
         }
     ) { padding ->
@@ -129,23 +103,20 @@ private fun HesabdarApp(database: AppDatabase) {
                 purchasesTotal = purchasesTotal,
                 receivables = receivables,
                 payables = payables,
+                otherIncome = otherIncome,
+                expenses = expenses,
+                pendingCheckCount = pendingChecks.size,
                 modifier = Modifier.padding(padding)
             )
-
             1 -> PersonsScreen(database, persons, Modifier.padding(padding))
             2 -> ProductsScreen(database, products, Modifier.padding(padding))
-            else -> TransactionsScreen(
-                database = database,
-                persons = persons,
-                products = products,
-                invoices = invoices,
-                modifier = Modifier.padding(padding)
-            )
+            3 -> TransactionsScreen(database, persons, products, invoices, Modifier.padding(padding))
+            else -> AdvancedAccountingHub(database, persons, Modifier.padding(padding))
         }
     }
 }
 
-/** داشبورد مدیریتی نسخه فعلی؛ مبالغ از Queryهای واقعی دیتابیس خوانده می‌شوند. */
+/** داشبورد واقعی با شاخص‌های دیتابیس و یک سود ساده مدیریتی. */
 @Composable
 private fun Dashboard(
     personCount: Int,
@@ -155,207 +126,78 @@ private fun Dashboard(
     purchasesTotal: Long,
     receivables: Long,
     payables: Long,
+    otherIncome: Long,
+    expenses: Long,
+    pendingCheckCount: Int,
     modifier: Modifier = Modifier
 ) {
-    val formatter = remember { NumberFormat.getNumberInstance(Locale.US) }
-
-    LazyColumn(
-        modifier.fillMaxSize().padding(20.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        item {
-            Text("حسابدار", style = MaterialTheme.typography.headlineMedium)
-            Text("نسخه 0.2.0 — دیتابیس محلی و عملیات مالی اولیه")
-        }
-
-        item {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                SummaryCard("طرف حساب", personCount.toString(), Modifier.weight(1f))
-                SummaryCard("کالا", productCount.toString(), Modifier.weight(1f))
-            }
-        }
-
-        item {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                SummaryCard("فاکتور", invoiceCount.toString(), Modifier.weight(1f))
-                SummaryCard("فروش", "${formatter.format(salesTotal)} تومان", Modifier.weight(1f))
-            }
-        }
-
-        item { SummaryCard("خرید", "${formatter.format(purchasesTotal)} تومان", Modifier.fillMaxWidth()) }
-        item { SummaryCard("مطالبات", "${formatter.format(receivables)} تومان", Modifier.fillMaxWidth()) }
-        item { SummaryCard("بدهی‌ها", "${formatter.format(payables)} تومان", Modifier.fillMaxWidth()) }
-
-        item {
-            Text(
-                "در این نسخه ثبت فروش و خرید، تسویه اولیه و گردش موجودی به‌صورت Transactional فعال شده است."
-            )
-        }
+    val f = remember { NumberFormat.getNumberInstance(Locale.US) }
+    val netSimple = salesTotal + otherIncome - purchasesTotal - expenses
+    LazyColumn(modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        item { Text("حسابدار", style = MaterialTheme.typography.headlineMedium); Text("نسخه 0.3.0 — حسابداری آفلاین روی دستگاه") }
+        item { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) { SummaryCard("اشخاص", personCount.toString(), Modifier.weight(1f)); SummaryCard("کالا", productCount.toString(), Modifier.weight(1f)) } }
+        item { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) { SummaryCard("فاکتورها", invoiceCount.toString(), Modifier.weight(1f)); SummaryCard("چک باز", pendingCheckCount.toString(), Modifier.weight(1f)) } }
+        item { SummaryCard("فروش", "${f.format(salesTotal)} تومان", Modifier.fillMaxWidth()) }
+        item { SummaryCard("خرید", "${f.format(purchasesTotal)} تومان", Modifier.fillMaxWidth()) }
+        item { SummaryCard("مطالبات", "${f.format(receivables)} تومان", Modifier.fillMaxWidth()) }
+        item { SummaryCard("بدهی", "${f.format(payables)} تومان", Modifier.fillMaxWidth()) }
+        item { SummaryCard("درآمد جانبی", "${f.format(otherIncome)} تومان", Modifier.fillMaxWidth()) }
+        item { SummaryCard("هزینه", "${f.format(expenses)} تومان", Modifier.fillMaxWidth()) }
+        item { SummaryCard("خالص ساده", "${f.format(netSimple)} تومان", Modifier.fillMaxWidth()) }
+        item { Text("برای خزانه، چک، اقساط، دریافت/پرداخت مستقل، کدینگ و گزارش‌ها وارد بخش حسابداری شوید.") }
     }
 }
 
-/** کارت کوچک داشبورد برای نمایش یک شاخص مدیریتی. */
 @Composable
 private fun SummaryCard(title: String, value: String, modifier: Modifier = Modifier) {
-    Card(modifier) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(title, style = MaterialTheme.typography.labelLarge)
-            Text(value, style = MaterialTheme.typography.titleLarge)
-        }
-    }
+    Card(modifier) { Column(Modifier.padding(12.dp)) { Text(title); Text(value, style = MaterialTheme.typography.titleMedium) } }
 }
 
-/** فرم و لیست اشخاص؛ داده‌ها مستقیماً در Room ذخیره می‌شوند. */
+/** ثبت ساده طرف‌حساب. */
 @Composable
-private fun PersonsScreen(
-    database: AppDatabase,
-    persons: List<PersonEntity>,
-    modifier: Modifier = Modifier
-) {
+private fun PersonsScreen(database: AppDatabase, persons: List<PersonEntity>, modifier: Modifier = Modifier) {
     var name by remember { mutableStateOf("") }
     var phone by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
-
-    Column(modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    Column(modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("اشخاص و طرف‌حساب‌ها", style = MaterialTheme.typography.headlineSmall)
-
-        TextField(
-            value = name,
-            onValueChange = { name = it },
-            label = { Text("نام") },
-            modifier = Modifier.fillMaxWidth()
-        )
-
-        TextField(
-            value = phone,
-            onValueChange = { phone = it },
-            label = { Text("شماره تماس") },
-            modifier = Modifier.fillMaxWidth()
-        )
-
-        Button(
-            onClick = {
-                if (name.isNotBlank()) {
-                    scope.launch {
-                        database.personDao().insert(
-                            PersonEntity(name = name.trim(), phone = phone.trim())
-                        )
-                        name = ""
-                        phone = ""
-                    }
-                }
-            },
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Icon(Icons.Default.Add, contentDescription = null)
-            Text(" افزودن شخص")
-        }
-
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(persons, key = { it.id }) { person ->
-                Card(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(14.dp)) {
-                        Text(person.name, style = MaterialTheme.typography.titleMedium)
-                        if (person.phone.isNotBlank()) Text(person.phone)
-                    }
-                }
-            }
+        TextField(name, { name = it }, label = { Text("نام") }, modifier = Modifier.fillMaxWidth())
+        TextField(phone, { phone = it }, label = { Text("شماره تماس") }, modifier = Modifier.fillMaxWidth())
+        Button(onClick = { if (name.isNotBlank()) scope.launch { database.personDao().insert(PersonEntity(name = name.trim(), phone = phone.trim())); name = ""; phone = "" } }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.Add, null); Text(" افزودن شخص") }
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            items(persons, key = { it.id }) { p -> Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(10.dp)) { Text(p.name); if (p.phone.isNotBlank()) Text(p.phone) } } }
         }
     }
 }
 
-/**
- * فرم کالا.
- * قیمت خرید، قیمت فروش و موجودی اولیه از همین نسخه ذخیره می‌شوند تا فاکتورهای خرید/فروش قابل تست باشند.
- */
+/** کالا با قیمت خرید/فروش و موجودی اولیه. */
 @Composable
-private fun ProductsScreen(
-    database: AppDatabase,
-    products: List<ProductEntity>,
-    modifier: Modifier = Modifier
-) {
+private fun ProductsScreen(database: AppDatabase, products: List<ProductEntity>, modifier: Modifier = Modifier) {
     var name by remember { mutableStateOf("") }
-    var buyPrice by remember { mutableStateOf("") }
-    var sellPrice by remember { mutableStateOf("") }
+    var buy by remember { mutableStateOf("") }
+    var sell by remember { mutableStateOf("") }
     var stock by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
-    val formatter = remember { NumberFormat.getNumberInstance(Locale.US) }
-
-    Column(modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Text("کالاها و موجودی", style = MaterialTheme.typography.headlineSmall)
-
-        TextField(
-            value = name,
-            onValueChange = { name = it },
-            label = { Text("نام کالا") },
-            modifier = Modifier.fillMaxWidth()
-        )
-
-        TextField(
-            value = buyPrice,
-            onValueChange = { buyPrice = it.filter(Char::isDigit) },
-            label = { Text("قیمت خرید") },
-            modifier = Modifier.fillMaxWidth()
-        )
-
-        TextField(
-            value = sellPrice,
-            onValueChange = { sellPrice = it.filter(Char::isDigit) },
-            label = { Text("قیمت فروش") },
-            modifier = Modifier.fillMaxWidth()
-        )
-
-        TextField(
-            value = stock,
-            onValueChange = { stock = it.filter(Char::isDigit) },
-            label = { Text("موجودی اولیه") },
-            modifier = Modifier.fillMaxWidth()
-        )
-
-        Button(
-            onClick = {
-                if (name.isNotBlank()) {
-                    scope.launch {
-                        database.productDao().insert(
-                            ProductEntity(
-                                name = name.trim(),
-                                buyPrice = buyPrice.toLongOrNull() ?: 0L,
-                                sellPrice = sellPrice.toLongOrNull() ?: 0L,
-                                stock = stock.toLongOrNull() ?: 0L
-                            )
-                        )
-                        name = ""
-                        buyPrice = ""
-                        sellPrice = ""
-                        stock = ""
-                    }
-                }
-            },
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Icon(Icons.Default.Add, contentDescription = null)
-            Text(" افزودن کالا")
-        }
-
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(products, key = { it.id }) { product ->
-                Card(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                        Text(product.name, style = MaterialTheme.typography.titleMedium)
-                        Text("خرید: ${formatter.format(product.buyPrice)} تومان")
-                        Text("فروش: ${formatter.format(product.sellPrice)} تومان")
-                        Text("موجودی: ${formatter.format(product.stock)}")
-                    }
-                }
+    val f = remember { NumberFormat.getNumberInstance(Locale.US) }
+    Column(modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("کالا و موجودی", style = MaterialTheme.typography.headlineSmall)
+        TextField(name, { name = it }, label = { Text("نام کالا") }, modifier = Modifier.fillMaxWidth())
+        TextField(buy, { buy = digits(it) }, label = { Text("قیمت خرید") }, modifier = Modifier.fillMaxWidth())
+        TextField(sell, { sell = digits(it) }, label = { Text("قیمت فروش") }, modifier = Modifier.fillMaxWidth())
+        TextField(stock, { stock = digits(it) }, label = { Text("موجودی اولیه") }, modifier = Modifier.fillMaxWidth())
+        Button(onClick = {
+            if (name.isNotBlank()) scope.launch {
+                database.productDao().insert(ProductEntity(name = name.trim(), buyPrice = buy.toLongOrNull() ?: 0, sellPrice = sell.toLongOrNull() ?: 0, stock = stock.toLongOrNull() ?: 0))
+                name = ""; buy = ""; sell = ""; stock = ""
             }
+        }, modifier = Modifier.fillMaxWidth()) { Text("ثبت کالا") }
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            items(products, key = { it.id }) { p -> Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(10.dp)) { Text(p.name); Text("خرید ${f.format(p.buyPrice)} | فروش ${f.format(p.sellPrice)} تومان"); Text("موجودی ${f.format(p.stock)}") } } }
         }
     }
 }
 
-/**
- * صفحه معاملات اولیه.
- * برای ساده نگه‌داشتن نسخه 0.2.0 یک ردیف کالا در هر ثبت پذیرفته می‌شود، اما دیتابیس و Repository از چند ردیف پشتیبانی می‌کنند.
- */
+/** فروش و خرید با اثر خودکار روی انبار و پرداخت اولیه. */
 @Composable
 private fun TransactionsScreen(
     database: AppDatabase,
@@ -364,196 +206,57 @@ private fun TransactionsScreen(
     invoices: List<InvoiceEntity>,
     modifier: Modifier = Modifier
 ) {
-    val repository = remember(database) { AccountingRepository(database) }
+    val repo = remember(database) { AccountingRepository(database) }
     val scope = rememberCoroutineScope()
-    val formatter = remember { NumberFormat.getNumberInstance(Locale.US) }
-
-    var transactionType by remember { mutableStateOf("SALE") }
-    var selectedPersonId by remember { mutableStateOf<Long?>(null) }
-    var selectedProductId by remember { mutableStateOf<Long?>(null) }
-    var quantityText by remember { mutableStateOf("1") }
-    var unitPriceText by remember { mutableStateOf("") }
-    var paidText by remember { mutableStateOf("") }
+    val f = remember { NumberFormat.getNumberInstance(Locale.US) }
+    var type by remember { mutableStateOf("SALE") }
+    var personId by remember { mutableStateOf<Long?>(null) }
+    var productId by remember { mutableStateOf<Long?>(null) }
+    var quantity by remember { mutableStateOf("1") }
+    var price by remember { mutableStateOf("") }
+    var paid by remember { mutableStateOf("") }
     var note by remember { mutableStateOf("") }
     var message by remember { mutableStateOf("") }
 
-    val selectedProduct = products.firstOrNull { it.id == selectedProductId }
-
-    LazyColumn(
-        modifier.fillMaxSize().padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
+    LazyColumn(modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         item { Text("فروش و خرید", style = MaterialTheme.typography.headlineSmall) }
-
-        item {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = { transactionType = "SALE" }, modifier = Modifier.weight(1f)) {
-                    Text(if (transactionType == "SALE") "✓ فروش" else "فروش")
-                }
-                Button(onClick = { transactionType = "PURCHASE" }, modifier = Modifier.weight(1f)) {
-                    Text(if (transactionType == "PURCHASE") "✓ خرید" else "خرید")
-                }
-            }
-        }
-
+        item { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) { Button({ type = "SALE" }, Modifier.weight(1f)) { Text(if (type == "SALE") "✓ فروش" else "فروش") }; Button({ type = "PURCHASE" }, Modifier.weight(1f)) { Text(if (type == "PURCHASE") "✓ خرید" else "خرید") } } }
         item {
             Text("طرف حساب")
-            Row(
-                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                OutlinedButton(onClick = { selectedPersonId = null }) {
-                    Text(if (selectedPersonId == null) "✓ متفرقه" else "متفرقه")
-                }
-                persons.forEach { person ->
-                    OutlinedButton(onClick = { selectedPersonId = person.id }) {
-                        Text(if (selectedPersonId == person.id) "✓ ${person.name}" else person.name)
-                    }
-                }
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                OutlinedButton({ personId = null }) { Text(if (personId == null) "✓ متفرقه" else "متفرقه") }
+                persons.forEach { p -> OutlinedButton({ personId = p.id }) { Text(if (personId == p.id) "✓ ${p.name}" else p.name) } }
             }
         }
-
         item {
             Text("کالا")
-            if (products.isEmpty()) {
-                Text("ابتدا از بخش کالاها یک کالا ثبت کنید.")
-            } else {
-                Row(
-                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    products.forEach { product ->
-                        OutlinedButton(
-                            onClick = {
-                                selectedProductId = product.id
-                                unitPriceText = if (transactionType == "SALE") {
-                                    product.sellPrice.toString()
-                                } else {
-                                    product.buyPrice.toString()
-                                }
-                            }
-                        ) {
-                            Text(if (selectedProductId == product.id) "✓ ${product.name}" else product.name)
-                        }
-                    }
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                products.forEach { p -> OutlinedButton({ productId = p.id; price = if (type == "SALE") p.sellPrice.toString() else p.buyPrice.toString() }) { Text(if (productId == p.id) "✓ ${p.name}" else p.name) } }
+            }
+        }
+        item { TextField(quantity, { quantity = digits(it) }, label = { Text("تعداد") }, modifier = Modifier.fillMaxWidth()) }
+        item { TextField(price, { price = digits(it) }, label = { Text("قیمت واحد") }, modifier = Modifier.fillMaxWidth()) }
+        item { TextField(paid, { paid = digits(it) }, label = { Text(if (type == "SALE") "دریافتی" else "پرداختی") }, modifier = Modifier.fillMaxWidth()) }
+        item { TextField(note, { note = it }, label = { Text("یادداشت") }, modifier = Modifier.fillMaxWidth()) }
+        item { Text("جمع: ${f.format((quantity.toLongOrNull() ?: 0) * (price.toLongOrNull() ?: 0))} تومان") }
+        item {
+            Button(onClick = {
+                val pid = productId
+                if (pid == null) { message = "کالا انتخاب نشده است."; return@Button }
+                scope.launch {
+                    runCatching {
+                        val line = InvoiceDraftLine(pid, quantity.toLongOrNull() ?: 0, price.toLongOrNull() ?: 0)
+                        if (type == "SALE") repo.postSale(personId, listOf(line), paid.toLongOrNull() ?: 0, note)
+                        else repo.postPurchase(personId, listOf(line), paid.toLongOrNull() ?: 0, note)
+                    }.onSuccess { message = "فاکتور #${it.invoiceId} ثبت شد."; paid = ""; note = "" }
+                        .onFailure { message = it.message ?: "خطا" }
                 }
-            }
+            }, modifier = Modifier.fillMaxWidth()) { Text("ثبت نهایی") }
         }
-
-        item {
-            TextField(
-                value = quantityText,
-                onValueChange = { quantityText = it.filter(Char::isDigit) },
-                label = { Text("تعداد") },
-                modifier = Modifier.fillMaxWidth()
-            )
-        }
-
-        item {
-            TextField(
-                value = unitPriceText,
-                onValueChange = { unitPriceText = it.filter(Char::isDigit) },
-                label = { Text(if (transactionType == "SALE") "قیمت فروش واحد" else "قیمت خرید واحد") },
-                modifier = Modifier.fillMaxWidth()
-            )
-        }
-
-        item {
-            TextField(
-                value = paidText,
-                onValueChange = { paidText = it.filter(Char::isDigit) },
-                label = { Text(if (transactionType == "SALE") "مبلغ دریافتی" else "مبلغ پرداختی") },
-                modifier = Modifier.fillMaxWidth()
-            )
-        }
-
-        item {
-            TextField(
-                value = note,
-                onValueChange = { note = it },
-                label = { Text("یادداشت") },
-                modifier = Modifier.fillMaxWidth()
-            )
-        }
-
-        item {
-            val quantity = quantityText.toLongOrNull() ?: 0L
-            val unitPrice = unitPriceText.toLongOrNull() ?: 0L
-            val total = quantity * unitPrice
-
-            Text("جمع: ${formatter.format(total)} تومان")
-            selectedProduct?.let { product ->
-                Text("موجودی فعلی ${product.name}: ${formatter.format(product.stock)}")
-            }
-        }
-
-        item {
-            Button(
-                onClick = {
-                    val productId = selectedProductId
-                    val quantity = quantityText.toLongOrNull() ?: 0L
-                    val unitPrice = unitPriceText.toLongOrNull() ?: 0L
-                    val paid = paidText.toLongOrNull() ?: 0L
-
-                    if (productId == null) {
-                        message = "یک کالا انتخاب کنید."
-                        return@Button
-                    }
-
-                    scope.launch {
-                        runCatching {
-                            val line = InvoiceDraftLine(
-                                productId = productId,
-                                quantity = quantity,
-                                unitPrice = unitPrice
-                            )
-
-                            if (transactionType == "SALE") {
-                                repository.postSale(
-                                    personId = selectedPersonId,
-                                    lines = listOf(line),
-                                    paidAmount = paid,
-                                    note = note
-                                )
-                            } else {
-                                repository.postPurchase(
-                                    personId = selectedPersonId,
-                                    lines = listOf(line),
-                                    paidAmount = paid,
-                                    note = note
-                                )
-                            }
-                        }.onSuccess { result ->
-                            message = "فاکتور شماره ${result.invoiceId} با مبلغ ${formatter.format(result.totalAmount)} تومان ثبت شد."
-                            quantityText = "1"
-                            paidText = ""
-                            note = ""
-                        }.onFailure { error ->
-                            message = error.message ?: "خطا در ثبت معامله"
-                        }
-                    }
-                },
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text(if (transactionType == "SALE") "ثبت نهایی فروش" else "ثبت نهایی خرید")
-            }
-        }
-
-        if (message.isNotBlank()) {
-            item { Text(message) }
-        }
-
-        item { Text("آخرین فاکتورها", style = MaterialTheme.typography.titleMedium) }
-
-        items(invoices.take(10), key = { it.id }) { invoice ->
-            Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(12.dp)) {
-                    Text("#${invoice.id} — ${if (invoice.type == "SALE") "فروش" else "خرید"}")
-                    Text("مبلغ: ${formatter.format(invoice.totalAmount)} تومان")
-                    Text("تسویه: ${formatter.format(invoice.paidAmount)} تومان")
-                    Text("مانده: ${formatter.format(invoice.totalAmount - invoice.paidAmount)} تومان")
-                }
-            }
-        }
+        if (message.isNotBlank()) item { Text(message) }
+        item { Text("آخرین فاکتورها") }
+        items(invoices.take(15), key = { it.id }) { i -> Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(10.dp)) { Text("#${i.id} ${if (i.type == "SALE") "فروش" else "خرید"}"); Text("${f.format(i.totalAmount)} تومان | مانده ${f.format(i.totalAmount - i.paidAmount)}") } } }
     }
 }
+
+private fun digits(value: String): String = value.filter(Char::isDigit)
