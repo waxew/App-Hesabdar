@@ -16,17 +16,12 @@ import com.waxew.hesabdar.util.PersianDateConverter
 import java.text.NumberFormat
 import java.util.Locale
 
-/**
- * زمان‌بندی یادآورهای کاملاً آفلاین با AlarmManager.
- * زمان یادآوری یک روز قبل از سررسید است؛ اگر کمتر از یک روز باقی مانده باشد چند ثانیه بعد زمان‌بندی می‌شود.
- */
-class ReminderScheduler(
-    private val context: Context,
-    private val database: AppDatabase
-) {
+/** بازسازی و زمان‌بندی Alarmهای آفلاین چک و قسط. */
+class ReminderScheduler(private val context: Context, private val database: AppDatabase) {
     suspend fun scheduleExisting() {
         createChannel(context)
-        database.checkDao().getPendingNow().forEach { check ->
+        val now = System.currentTimeMillis()
+        database.reminderDao().getPendingChecks(now).forEach { check ->
             schedule(
                 requestCode = 100_000 + check.id.toInt().coerceAtMost(800_000),
                 dueAt = check.dueAt,
@@ -34,7 +29,7 @@ class ReminderScheduler(
                 body = "چک ${formatMoney(check.amount)} تومان - سررسید ${PersianDateConverter.fromMillis(check.dueAt)}"
             )
         }
-        database.installmentDao().getPendingNow().forEach { installment ->
+        database.reminderDao().getPendingInstallments(now).forEach { installment ->
             schedule(
                 requestCode = 1_000_000 + installment.id.toInt().coerceAtMost(800_000),
                 dueAt = installment.dueAt,
@@ -72,11 +67,7 @@ class ReminderScheduler(
 
         fun createChannel(context: Context) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                val channel = NotificationChannel(
-                    CHANNEL_ID,
-                    "سررسیدهای مالی",
-                    NotificationManager.IMPORTANCE_HIGH
-                ).apply {
+                val channel = NotificationChannel(CHANNEL_ID, "سررسیدهای مالی", NotificationManager.IMPORTANCE_HIGH).apply {
                     description = "یادآوری چک‌ها و اقساط نزدیک سررسید"
                 }
                 context.getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
@@ -87,19 +78,17 @@ class ReminderScheduler(
     }
 }
 
-/** Receiver سبک که هنگام Alarm اعلان محلی را نمایش می‌دهد. */
+/** نمایش اعلان زمانی که Alarm فراخوانی می‌شود. */
 class ReminderReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         ReminderScheduler.createChannel(context)
         val title = intent.getStringExtra(ReminderScheduler.EXTRA_TITLE) ?: "یادآوری حسابدار"
         val body = intent.getStringExtra(ReminderScheduler.EXTRA_BODY) ?: "یک سررسید مالی نزدیک است."
         val id = intent.getIntExtra(ReminderScheduler.EXTRA_NOTIFICATION_ID, 1001)
-
-        val openIntent = Intent(context, MainActivity::class.java)
         val openPending = PendingIntent.getActivity(
             context,
             id,
-            openIntent,
+            Intent(context, MainActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val notification = NotificationCompat.Builder(context, ReminderScheduler.CHANNEL_ID)
@@ -111,11 +100,10 @@ class ReminderReceiver : BroadcastReceiver() {
             .setAutoCancel(true)
             .setContentIntent(openPending)
             .build()
-
         try {
             NotificationManagerCompat.from(context).notify(id, notification)
         } catch (_: SecurityException) {
-            // Android 13+ ممکن است مجوز اعلان توسط کاربر رد شده باشد؛ برنامه نباید Crash کند.
+            // در صورت رد مجوز اعلان، نرم‌افزار بدون Crash ادامه می‌دهد.
         }
     }
 }
