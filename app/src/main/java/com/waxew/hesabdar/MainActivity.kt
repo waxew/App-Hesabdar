@@ -1,5 +1,8 @@
 package com.waxew.hesabdar
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -28,6 +31,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -40,7 +44,10 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import com.waxew.hesabdar.data.AppDatabase
+import com.waxew.hesabdar.data.LedgerBootstrapper
+import com.waxew.hesabdar.reminder.ReminderScheduler
 import com.waxew.hesabdar.security.PinSecurityManager
+import com.waxew.hesabdar.util.PersianDateConverter
 import java.text.NumberFormat
 import java.util.Locale
 
@@ -48,6 +55,7 @@ import java.util.Locale
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        requestNotificationPermissionIfNeeded()
         val database = AppDatabase.get(this)
         setContent {
             MaterialTheme {
@@ -57,9 +65,18 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    /** Android 13+ برای اعلان سررسیدها مجوز Runtime لازم دارد. */
+    private fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1201)
+        }
+    }
 }
 
-/** لایه قفل محلی؛ در صورت فعال بودن PIN، داده‌های مالی قبل از احراز نمایش داده نمی‌شوند. */
+/** قفل برنامه + راه‌اندازی زیرساخت‌های سیستمی. */
 @Composable
 private fun SecureRoot(database: AppDatabase) {
     val context = LocalContext.current
@@ -67,6 +84,11 @@ private fun SecureRoot(database: AppDatabase) {
     var unlocked by remember { mutableStateOf(!security.hasPin()) }
     var pin by remember { mutableStateOf("") }
     var error by remember { mutableStateOf("") }
+
+    LaunchedEffect(database) {
+        runCatching { LedgerBootstrapper(database).ensureDefaults() }
+        runCatching { ReminderScheduler(context, database).scheduleExisting() }
+    }
 
     if (unlocked) {
         HesabdarApp(database)
@@ -83,10 +105,7 @@ private fun SecureRoot(database: AppDatabase) {
         )
         Button(
             onClick = {
-                if (security.verifyPin(pin)) {
-                    unlocked = true
-                    error = ""
-                } else error = "PIN اشتباه است."
+                if (security.verifyPin(pin)) { unlocked = true; error = "" } else error = "PIN اشتباه است."
             },
             modifier = Modifier.fillMaxWidth().padding(top = 10.dp)
         ) { Text("باز کردن برنامه") }
@@ -124,17 +143,9 @@ private fun HesabdarApp(database: AppDatabase) {
         val contentModifier = Modifier.padding(padding)
         when (tab) {
             0 -> DashboardScreen(
-                persons = persons.size,
-                products = products.size,
-                invoices = invoices.size,
-                sales = sales,
-                purchases = purchases,
-                receivables = receivables,
-                payables = payables,
-                income = otherIncome,
-                expenses = expenses,
-                pendingChecks = pendingChecks.size,
-                modifier = contentModifier
+                persons.size, products.size, invoices.size, sales, purchases,
+                receivables, payables, otherIncome, expenses, pendingChecks.size,
+                contentModifier
             )
             1 -> PeopleScreen(database, persons, contentModifier)
             2 -> ProductManagementScreen(database, products, contentModifier)
@@ -162,8 +173,13 @@ private fun DashboardScreen(
 ) {
     val f = remember { NumberFormat.getNumberInstance(Locale.US) }
     val netSimple = sales + income - purchases - expenses
+    val today = remember { PersianDateConverter.now().toString() }
     LazyColumn(modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        item { Text("حسابدار", style = MaterialTheme.typography.headlineMedium); Text("هسته حسابداری آفلاین — اطلاعات روی گوشی") }
+        item {
+            Text("حسابدار", style = MaterialTheme.typography.headlineMedium)
+            Text("تاریخ شمسی: $today")
+            Text("اطلاعات اصلی روی همین گوشی ذخیره می‌شود.")
+        }
         item { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) { Summary("اشخاص", persons.toString(), Modifier.weight(1f)); Summary("کالا", products.toString(), Modifier.weight(1f)) } }
         item { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) { Summary("اسناد تجاری", invoices.toString(), Modifier.weight(1f)); Summary("چک باز", pendingChecks.toString(), Modifier.weight(1f)) } }
         item { Summary("فروش خالص", "${f.format(sales)} تومان") }
