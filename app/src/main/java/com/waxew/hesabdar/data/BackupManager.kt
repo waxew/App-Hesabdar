@@ -1,7 +1,10 @@
 package com.waxew.hesabdar.data
 
 import android.content.Context
+import android.graphics.Paint
 import android.graphics.pdf.PdfDocument
+import com.waxew.hesabdar.settings.BusinessSettings
+import com.waxew.hesabdar.util.PersianDateConverter
 import java.io.File
 import java.io.FileOutputStream
 import java.text.NumberFormat
@@ -9,34 +12,21 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-/**
- * مدیریت Backup محلی دیتابیس.
- * قبل از کپی فایل اصلی، WAL checkpoint اجرا می‌شود تا داده‌های نوشته‌شده به فایل اصلی SQLite منتقل شوند.
- */
-class BackupManager(
-    private val context: Context,
-    private val database: AppDatabase
-) {
+/** مدیریت Backup محلی دیتابیس با checkpoint قبل از کپی. */
+class BackupManager(private val context: Context, private val database: AppDatabase) {
     private val dbName = "hesabdar.db"
 
-    /** ساخت نسخه پشتیبان در پوشه خصوصی external files برنامه. */
     fun createBackup(): File {
         database.openHelper.writableDatabase.query("PRAGMA wal_checkpoint(FULL)").close()
         val source = context.getDatabasePath(dbName)
         require(source.exists()) { "فایل دیتابیس پیدا نشد." }
-
-        val dir = File(context.getExternalFilesDir(null) ?: context.filesDir, "backups")
-        if (!dir.exists()) dir.mkdirs()
+        val dir = File(context.getExternalFilesDir(null) ?: context.filesDir, "backups").also { if (!it.exists()) it.mkdirs() }
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val target = File(dir, "Hesabdar_$stamp.hdb")
         source.inputStream().use { input -> target.outputStream().use { output -> input.copyTo(output) } }
         return target
     }
 
-    /**
-     * بازیابی فایل پشتیبان.
-     * باید در لایه UI بعد از گرفتن تایید کاربر اجرا شود و سپس برنامه Restart شود.
-     */
     fun restoreBackup(backupFile: File) {
         require(backupFile.exists() && backupFile.length() > 0) { "فایل پشتیبان معتبر نیست." }
         database.close()
@@ -48,19 +38,17 @@ class BackupManager(
     }
 }
 
-/** خروجی‌های ساده CSV و PDF بدون نیاز به کتابخانه خارجی. */
-class DataExportManager(
-    private val context: Context,
-    private val database: AppDatabase
-) {
+/** خروجی CSV و PDF بدون وابستگی خارجی. */
+class DataExportManager(private val context: Context, private val database: AppDatabase) {
     private fun exportDir(): File = File(context.getExternalFilesDir(null) ?: context.filesDir, "exports").also { if (!it.exists()) it.mkdirs() }
 
-    /** خروجی CSV از فاکتورها برای Excel و نرم‌افزارهای دیگر. */
+    /** CSV با BOM برای باز شدن بهتر متن فارسی در Excel. */
     fun exportInvoicesCsv(): File {
         val file = File(exportDir(), "invoices_${System.currentTimeMillis()}.csv")
         val db = database.openHelper.readableDatabase
         val cursor = db.query("SELECT id,type,personId,totalAmount,paidAmount,note,createdAt FROM invoices ORDER BY id")
         file.bufferedWriter(Charsets.UTF_8).use { writer ->
+            writer.append('\uFEFF')
             writer.appendLine("id,type,personId,totalAmount,paidAmount,note,createdAt")
             while (cursor.moveToNext()) {
                 val note = cursor.getString(5).orEmpty().replace("\"", "\"\"")
@@ -71,7 +59,77 @@ class DataExportManager(
         return file
     }
 
-    /** گزارش PDF خلاصه مدیریتی فعلی. */
+    /** PDF فارسی یک فاکتور با مشخصات کسب‌وکار و تمام ردیف‌ها. */
+    fun exportInvoicePdf(invoiceId: Long): File {
+        val db = database.openHelper.readableDatabase
+        val invoiceCursor = db.query(
+            "SELECT i.id,i.type,i.totalAmount,i.paidAmount,i.note,i.createdAt,COALESCE(p.name,'مشتری متفرقه') FROM invoices i LEFT JOIN persons p ON p.id=i.personId WHERE i.id=?",
+            arrayOf(invoiceId.toString())
+        )
+        require(invoiceCursor.moveToFirst()) { "فاکتور پیدا نشد." }
+        val type = invoiceCursor.getString(1)
+        val total = invoiceCursor.getLong(2)
+        val paid = invoiceCursor.getLong(3)
+        val note = invoiceCursor.getString(4).orEmpty()
+        val createdAt = invoiceCursor.getLong(5)
+        val person = invoiceCursor.getString(6)
+        invoiceCursor.close()
+
+        data class Line(val name: String, val qty: Long, val price: Long, val total: Long)
+        val lines = mutableListOf<Line>()
+        val itemCursor = db.query("SELECT productNameSnapshot,quantity,unitPrice,lineTotal FROM invoice_items WHERE invoiceId=? ORDER BY id", arrayOf(invoiceId.toString()))
+        while (itemCursor.moveToNext()) lines += Line(itemCursor.getString(0), itemCursor.getLong(1), itemCursor.getLong(2), itemCursor.getLong(3))
+        itemCursor.close()
+
+        val business = BusinessSettings(context).load()
+        val formatter = NumberFormat.getNumberInstance(Locale.US)
+        val document = PdfDocument()
+        val pageInfo = PdfDocument.PageInfo.Builder(595, 842, 1).create()
+        var pageNumber = 1
+        var page = document.startPage(pageInfo)
+        var canvas = page.canvas
+        val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 22f; textAlign = Paint.Align.RIGHT; typeface = android.graphics.Typeface.DEFAULT_BOLD }
+        val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 14f; textAlign = Paint.Align.RIGHT }
+        val smallPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 12f; textAlign = Paint.Align.RIGHT }
+        var y = 48f
+
+        fun header() {
+            y = 48f
+            canvas.drawText(business.name, 555f, y, titlePaint); y += 32f
+            canvas.drawText("${invoiceTypeFa(type)} شماره $invoiceId", 555f, y, textPaint); y += 24f
+            canvas.drawText("تاریخ: ${PersianDateConverter.fromMillis(createdAt)}", 555f, y, textPaint); y += 24f
+            canvas.drawText("طرف حساب: $person", 555f, y, textPaint); y += 30f
+            canvas.drawLine(40f, y, 555f, y, textPaint); y += 24f
+        }
+        fun newPage() {
+            document.finishPage(page)
+            pageNumber++
+            page = document.startPage(PdfDocument.PageInfo.Builder(595, 842, pageNumber).create())
+            canvas = page.canvas
+            header()
+        }
+
+        header()
+        lines.forEachIndexed { index, line ->
+            if (y > 720f) newPage()
+            canvas.drawText("${index + 1}. ${line.name}", 555f, y, textPaint); y += 20f
+            canvas.drawText("${formatter.format(line.qty)} × ${formatter.format(line.price)} = ${formatter.format(line.total)}", 540f, y, smallPaint); y += 24f
+        }
+        if (y > 680f) newPage()
+        canvas.drawLine(40f, y, 555f, y, textPaint); y += 28f
+        canvas.drawText("جمع کل: ${formatter.format(total)} ${currencyFa(business.currency)}", 555f, y, titlePaint); y += 28f
+        canvas.drawText("تسویه: ${formatter.format(paid)}", 555f, y, textPaint); y += 22f
+        canvas.drawText("مانده: ${formatter.format(total - paid)}", 555f, y, textPaint); y += 22f
+        if (note.isNotBlank()) canvas.drawText("توضیحات: ${note.take(70)}", 555f, y, smallPaint)
+        document.finishPage(page)
+
+        val file = File(exportDir(), "invoice_${invoiceId}_${System.currentTimeMillis()}.pdf")
+        FileOutputStream(file).use { document.writeTo(it) }
+        document.close()
+        return file
+    }
+
+    /** گزارش PDF خلاصه مدیریتی. */
     fun exportSummaryPdf(): File {
         val f = NumberFormat.getNumberInstance(Locale.US)
         val db = database.openHelper.readableDatabase
@@ -81,30 +139,38 @@ class DataExportManager(
             c.close()
             return value
         }
-
-        val sales = scalar("SELECT COALESCE(SUM(totalAmount),0) FROM invoices WHERE type='SALE'")
-        val purchases = scalar("SELECT COALESCE(SUM(totalAmount),0) FROM invoices WHERE type='PURCHASE'")
+        val sales = scalar("SELECT COALESCE(SUM(CASE WHEN type='SALE' THEN totalAmount WHEN type='SALE_RETURN' THEN -totalAmount ELSE 0 END),0) FROM invoices")
+        val purchases = scalar("SELECT COALESCE(SUM(CASE WHEN type='PURCHASE' THEN totalAmount WHEN type='PURCHASE_RETURN' THEN -totalAmount ELSE 0 END),0) FROM invoices")
         val expenses = scalar("SELECT COALESCE(SUM(amount),0) FROM cash_entries WHERE kind='EXPENSE'")
         val income = scalar("SELECT COALESCE(SUM(amount),0) FROM cash_entries WHERE kind='INCOME'")
-
+        val business = BusinessSettings(context).load()
         val document = PdfDocument()
-        val pageInfo = PdfDocument.PageInfo.Builder(595, 842, 1).create()
-        val page = document.startPage(pageInfo)
+        val page = document.startPage(PdfDocument.PageInfo.Builder(595, 842, 1).create())
         val canvas = page.canvas
-        val paint = android.graphics.Paint().apply { textSize = 18f }
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 18f; textAlign = Paint.Align.RIGHT }
         var y = 60f
-        fun line(text: String) { canvas.drawText(text, 40f, y, paint); y += 34f }
-        line("Hesabdar - Accounting Summary")
-        line("Sales: ${f.format(sales)}")
-        line("Purchases: ${f.format(purchases)}")
-        line("Other income: ${f.format(income)}")
-        line("Expenses: ${f.format(expenses)}")
-        line("Simple net: ${f.format(sales + income - purchases - expenses)}")
+        fun line(text: String) { canvas.drawText(text, 555f, y, paint); y += 34f }
+        line(business.name)
+        line("گزارش خلاصه حسابداری")
+        line("فروش خالص: ${f.format(sales)}")
+        line("خرید خالص: ${f.format(purchases)}")
+        line("سایر درآمد: ${f.format(income)}")
+        line("هزینه: ${f.format(expenses)}")
+        line("خالص ساده: ${f.format(sales + income - purchases - expenses)}")
         document.finishPage(page)
-
         val file = File(exportDir(), "summary_${System.currentTimeMillis()}.pdf")
         FileOutputStream(file).use { document.writeTo(it) }
         document.close()
         return file
     }
+
+    private fun invoiceTypeFa(type: String): String = when (type) {
+        "SALE" -> "فاکتور فروش"
+        "PURCHASE" -> "فاکتور خرید"
+        "SALE_RETURN" -> "برگشت از فروش"
+        "PURCHASE_RETURN" -> "برگشت از خرید"
+        else -> "سند تجاری"
+    }
+
+    private fun currencyFa(currency: String): String = if (currency == "RIAL") "ریال" else "تومان"
 }
