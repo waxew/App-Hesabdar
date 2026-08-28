@@ -13,6 +13,7 @@ import androidx.core.app.NotificationManagerCompat
 import com.waxew.hesabdar.MainActivity
 import com.waxew.hesabdar.data.AppDatabase
 import com.waxew.hesabdar.util.PersianDateConverter
+import kotlinx.coroutines.flow.first
 import java.text.NumberFormat
 import java.util.Locale
 
@@ -21,7 +22,7 @@ class ReminderScheduler(private val context: Context, private val database: AppD
     suspend fun scheduleExisting() {
         createChannel(context)
         val now = System.currentTimeMillis()
-        database.reminderDao().getPendingChecks(now).forEach { check ->
+        database.checkDao().observePending().first().filter { it.dueAt > now }.forEach { check ->
             schedule(
                 requestCode = 100_000 + check.id.toInt().coerceAtMost(800_000),
                 dueAt = check.dueAt,
@@ -29,7 +30,7 @@ class ReminderScheduler(private val context: Context, private val database: AppD
                 body = "چک ${formatMoney(check.amount)} تومان - سررسید ${PersianDateConverter.fromMillis(check.dueAt)}"
             )
         }
-        database.reminderDao().getPendingInstallments(now).forEach { installment ->
+        database.installmentDao().observeAll().first().filter { it.status != "PAID" && it.dueAt > now }.forEach { installment ->
             schedule(
                 requestCode = 1_000_000 + installment.id.toInt().coerceAtMost(800_000),
                 dueAt = installment.dueAt,
@@ -49,12 +50,7 @@ class ReminderScheduler(private val context: Context, private val database: AppD
             putExtra(EXTRA_BODY, body)
             putExtra(EXTRA_NOTIFICATION_ID, requestCode)
         }
-        val pending = PendingIntent.getBroadcast(
-            context,
-            requestCode,
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
+        val pending = PendingIntent.getBroadcast(context, requestCode, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val alarm = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         alarm.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAt, pending)
     }
