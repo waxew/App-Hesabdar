@@ -23,9 +23,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.waxew.hesabdar.data.AccountingRepository
 import com.waxew.hesabdar.data.AppDatabase
+import com.waxew.hesabdar.data.DataExportManager
 import com.waxew.hesabdar.data.InvoiceDraftLine
 import com.waxew.hesabdar.data.InvoiceEntity
 import com.waxew.hesabdar.data.PersonEntity
@@ -34,19 +36,11 @@ import kotlinx.coroutines.launch
 import java.text.NumberFormat
 import java.util.Locale
 
-private data class UiInvoiceLine(
-    val key: Long,
-    val product: ProductEntity,
-    val quantity: Long,
-    val unitPrice: Long
-) {
+private data class UiInvoiceLine(val key: Long, val product: ProductEntity, val quantity: Long, val unitPrice: Long) {
     val total: Long get() = quantity * unitPrice
 }
 
-/**
- * فاکتور چندردیفی برای فروش، خرید و دو نوع مرجوعی.
- * سبد در حافظه UI نگهداری می‌شود و فقط هنگام ثبت نهایی به Repository فرستاده می‌شود.
- */
+/** فاکتور چندردیفی فروش، خرید و مرجوعی با خروجی PDF. */
 @Composable
 fun InvoiceComposerScreen(
     database: AppDatabase,
@@ -55,7 +49,9 @@ fun InvoiceComposerScreen(
     invoices: List<InvoiceEntity>,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     val repo = remember(database) { AccountingRepository(database) }
+    val exportManager = remember(database) { DataExportManager(context, database) }
     val scope = rememberCoroutineScope()
     val formatter = remember { NumberFormat.getNumberInstance(Locale.US) }
     val cart = remember { mutableStateListOf<UiInvoiceLine>() }
@@ -111,10 +107,7 @@ fun InvoiceComposerScreen(
                 val price = priceText.toLongOrNull() ?: 0
                 if (q <= 0) { message = "تعداد معتبر وارد کنید."; return@Button }
                 cart += UiInvoiceLine(nextKey++, p, q, price)
-                quantityText = "1"
-                productId = null
-                priceText = ""
-                message = ""
+                quantityText = "1"; productId = null; priceText = ""; message = ""
             }, modifier = Modifier.fillMaxWidth()) { Text("افزودن ردیف به فاکتور") }
         }
 
@@ -157,10 +150,15 @@ fun InvoiceComposerScreen(
         item { Text("آخرین اسناد تجاری") }
         items(invoices.take(20), key = { it.id }) { invoice ->
             Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(10.dp)) {
+                Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("#${invoice.id} - ${typeFa(invoice.type)}")
                     Text("مبلغ ${formatter.format(invoice.totalAmount)} تومان")
                     Text("تسویه ${formatter.format(invoice.paidAmount)} تومان")
+                    OutlinedButton(onClick = {
+                        runCatching { exportManager.exportInvoicePdf(invoice.id) }
+                            .onSuccess { message = "PDF فاکتور ساخته شد: ${it.name}" }
+                            .onFailure { message = it.message ?: "خطا در ساخت PDF" }
+                    }) { Text("ساخت PDF فاکتور") }
                 }
             }
         }
