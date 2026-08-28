@@ -2,10 +2,7 @@ package com.waxew.hesabdar.data
 
 import androidx.room.withTransaction
 
-/**
- * کدینگ پایه‌ای که برای ثبت خودکار اسناد استفاده می‌شود.
- * کاربر بعداً می‌تواند حساب‌های بیشتری اضافه کند؛ این کدهای سیستمی ثابت می‌مانند.
- */
+/** کدهای حساب‌های سیستمی مورد استفاده اسناد خودکار. */
 object SystemAccountCodes {
     const val CASH = "1010"
     const val BANK = "1020"
@@ -15,12 +12,11 @@ object SystemAccountCodes {
     const val SALES = "4000"
     const val SALES_RETURN = "4010"
     const val COGS = "5000"
-    const val PURCHASE_RETURN = "5010"
     const val EXPENSE = "6000"
     const val OTHER_INCOME = "7000"
 }
 
-/** راه‌انداز کدینگ پیش‌فرض. insert با IGNORE باعث می‌شود اجرای چندباره امن باشد. */
+/** کدینگ پیش‌فرض؛ اجرای چندباره به دلیل OnConflict.IGNORE امن است. */
 class LedgerBootstrapper(private val database: AppDatabase) {
     suspend fun ensureDefaults() = database.withTransaction {
         database.ledgerDao().insertAccounts(
@@ -33,7 +29,6 @@ class LedgerBootstrapper(private val database: AppDatabase) {
                 LedgerAccountEntity(code = SystemAccountCodes.SALES, name = "فروش", level = "GENERAL", nature = "CREDIT"),
                 LedgerAccountEntity(code = SystemAccountCodes.SALES_RETURN, name = "برگشت از فروش", level = "GENERAL", nature = "DEBIT"),
                 LedgerAccountEntity(code = SystemAccountCodes.COGS, name = "بهای تمام‌شده", level = "GENERAL", nature = "DEBIT"),
-                LedgerAccountEntity(code = SystemAccountCodes.PURCHASE_RETURN, name = "برگشت از خرید", level = "GENERAL", nature = "CREDIT"),
                 LedgerAccountEntity(code = SystemAccountCodes.EXPENSE, name = "هزینه‌ها", level = "GENERAL", nature = "DEBIT"),
                 LedgerAccountEntity(code = SystemAccountCodes.OTHER_INCOME, name = "سایر درآمدها", level = "GENERAL", nature = "CREDIT")
             )
@@ -41,9 +36,7 @@ class LedgerBootstrapper(private val database: AppDatabase) {
     }
 }
 
-/**
- * موتور اسناد خودکار. این کلاس داخل Transaction بالادستی فراخوانی می‌شود تا سند و عملیات تجاری با هم Atomic باشند.
- */
+/** موتور سند دوبل خودکار فاکتور و گردش نقدی. */
 class AutomaticJournalEngine(private val database: AppDatabase) {
 
     suspend fun postInvoiceJournal(
@@ -61,8 +54,6 @@ class AutomaticJournalEngine(private val database: AppDatabase) {
         val sales = account(SystemAccountCodes.SALES)
         val salesReturn = account(SystemAccountCodes.SALES_RETURN)
         val cogs = account(SystemAccountCodes.COGS)
-        val purchaseReturn = account(SystemAccountCodes.PURCHASE_RETURN)
-
         val lines = mutableListOf<JournalLineEntity>()
         val remainder = total - settlement
 
@@ -91,9 +82,9 @@ class AutomaticJournalEngine(private val database: AppDatabase) {
                 }
             }
             "PURCHASE_RETURN" -> {
-                if (settlement > 0) lines += line(cash.id, debit = settlement, text = "دریافت برگشت خرید")
+                if (settlement > 0) lines += line(cash.id, debit = settlement, text = "دریافت وجه برگشت خرید")
                 if (remainder > 0) lines += line(ap.id, debit = remainder, text = "کاهش بدهی تامین‌کننده")
-                lines += line(purchaseReturn.id, credit = total, text = "برگشت از خرید")
+                lines += line(inventory.id, credit = total, text = "خروج موجودی بابت برگشت خرید")
             }
             else -> error("نوع سند خودکار پشتیبانی نمی‌شود.")
         }
@@ -114,7 +105,6 @@ class AutomaticJournalEngine(private val database: AppDatabase) {
         val income = account(SystemAccountCodes.OTHER_INCOME)
         val ar = account(SystemAccountCodes.RECEIVABLE)
         val ap = account(SystemAccountCodes.PAYABLE)
-
         val lines = when (kind) {
             "INCOME" -> listOf(line(cash.id, debit = amount), line(income.id, credit = amount))
             "EXPENSE" -> listOf(line(expense.id, debit = amount), line(cash.id, credit = amount))
