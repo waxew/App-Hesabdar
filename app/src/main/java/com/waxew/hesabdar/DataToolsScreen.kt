@@ -34,26 +34,30 @@ import com.waxew.hesabdar.settings.BusinessSettings
 import com.waxew.hesabdar.util.PersianDateConverter
 import java.io.File
 
-/** مرکز تنظیمات، داده، خروجی و امنیت. */
+/** مرکز تنظیمات، گزارش حرفه‌ای، داده، خروجی و امنیت. */
 @Composable
 fun DataToolsScreen(database: AppDatabase, modifier: Modifier = Modifier) {
     var section by remember { mutableStateOf("BUSINESS") }
     Column(modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("تنظیمات و ابزارها")
-        Row(
-            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            OutlinedButton(onClick = { section = "BUSINESS" }) { Text(if (section == "BUSINESS") "✓ کسب‌وکار" else "کسب‌وکار") }
-            OutlinedButton(onClick = { section = "DATA" }) { Text(if (section == "DATA") "✓ داده و خروجی" else "داده و خروجی") }
-            OutlinedButton(onClick = { section = "SECURITY" }) { Text(if (section == "SECURITY") "✓ امنیت" else "امنیت") }
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            ToolTab("BUSINESS", "کسب‌وکار", section) { section = it }
+            ToolTab("REPORTS", "گزارش حرفه‌ای", section) { section = it }
+            ToolTab("DATA", "داده و خروجی", section) { section = it }
+            ToolTab("SECURITY", "امنیت", section) { section = it }
         }
         when (section) {
             "BUSINESS" -> BusinessSection()
+            "REPORTS" -> ProfessionalReportsScreen(database, Modifier.fillMaxSize())
             "DATA" -> DataSection(database)
             else -> SecuritySection()
         }
     }
+}
+
+@Composable
+private fun ToolTab(code: String, title: String, selected: String, onSelect: (String) -> Unit) {
+    OutlinedButton(onClick = { onSelect(code) }) { Text(if (selected == code) "✓ $title" else title) }
 }
 
 /** مشخصات کسب‌وکار، واحد پول و سال مالی نمایشی. */
@@ -87,16 +91,7 @@ private fun BusinessSection() {
         item {
             Button(onClick = {
                 runCatching {
-                    settings.save(
-                        BusinessProfile(
-                            name = name,
-                            phone = phone,
-                            address = address,
-                            currency = currency,
-                            fiscalYearTitle = fiscalYear,
-                            invoicePrefix = prefix
-                        )
-                    )
+                    settings.save(BusinessProfile(name, phone, address, currency, fiscalYear, prefix))
                 }.onSuccess { message = "تنظیمات کسب‌وکار ذخیره شد." }
                     .onFailure { message = it.message ?: "خطا در ذخیره تنظیمات" }
             }, modifier = Modifier.fillMaxWidth()) { Text("ذخیره تنظیمات") }
@@ -114,9 +109,7 @@ private fun DataSection(database: AppDatabase) {
     var message by remember { mutableStateOf("") }
     var refresh by remember { mutableStateOf(0) }
     val backupDir = remember(refresh) { File(context.getExternalFilesDir(null) ?: context.filesDir, "backups") }
-    val backups = remember(refresh) {
-        backupDir.listFiles()?.filter { it.isFile && it.extension == "hdb" }?.sortedByDescending { it.lastModified() }.orEmpty()
-    }
+    val backups = remember(refresh) { backupDir.listFiles()?.filter { it.isFile && it.extension == "hdb" }?.sortedByDescending { it.lastModified() }.orEmpty() }
 
     LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         item {
@@ -169,9 +162,7 @@ private fun SecuritySection() {
         }
         item { TextField(pinCheck, { pinCheck = it.filter(Char::isDigit).take(12) }, label = { Text("آزمایش PIN") }, modifier = Modifier.fillMaxWidth()) }
         item { OutlinedButton(onClick = { message = if (security.verifyPin(pinCheck)) "PIN صحیح است." else "PIN اشتباه است." }, modifier = Modifier.fillMaxWidth()) { Text("بررسی PIN") } }
-        if (hasPin) {
-            item { OutlinedButton(onClick = { security.clearPin(); hasPin = false; message = "قفل PIN غیرفعال شد." }, modifier = Modifier.fillMaxWidth()) { Text("حذف PIN") } }
-        }
+        if (hasPin) item { OutlinedButton(onClick = { security.clearPin(); hasPin = false; message = "قفل PIN غیرفعال شد." }, modifier = Modifier.fillMaxWidth()) { Text("حذف PIN") } }
         if (message.isNotBlank()) item { Text(message) }
     }
 }
