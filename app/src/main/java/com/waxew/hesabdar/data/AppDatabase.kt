@@ -159,16 +159,16 @@ interface InventoryDao {
 
 @Dao
 interface DashboardDao {
-    @Query("SELECT COALESCE(SUM(totalAmount), 0) FROM invoices WHERE type = 'SALE'")
+    @Query("SELECT COALESCE(SUM(CASE WHEN type='SALE' THEN totalAmount WHEN type='SALE_RETURN' THEN -totalAmount ELSE 0 END),0) FROM invoices")
     fun observeSalesTotal(): Flow<Long>
 
-    @Query("SELECT COALESCE(SUM(totalAmount), 0) FROM invoices WHERE type = 'PURCHASE'")
+    @Query("SELECT COALESCE(SUM(CASE WHEN type='PURCHASE' THEN totalAmount WHEN type='PURCHASE_RETURN' THEN -totalAmount ELSE 0 END),0) FROM invoices")
     fun observePurchasesTotal(): Flow<Long>
 
-    @Query("SELECT COALESCE(SUM(totalAmount - paidAmount), 0) FROM invoices WHERE type = 'SALE'")
+    @Query("SELECT COALESCE(SUM(CASE WHEN type='SALE' THEN (totalAmount-paidAmount) WHEN type='SALE_RETURN' THEN -(totalAmount-paidAmount) ELSE 0 END),0) FROM invoices")
     fun observeReceivables(): Flow<Long>
 
-    @Query("SELECT COALESCE(SUM(totalAmount - paidAmount), 0) FROM invoices WHERE type = 'PURCHASE'")
+    @Query("SELECT COALESCE(SUM(CASE WHEN type='PURCHASE' THEN (totalAmount-paidAmount) WHEN type='PURCHASE_RETURN' THEN -(totalAmount-paidAmount) ELSE 0 END),0) FROM invoices")
     fun observePayables(): Flow<Long>
 }
 
@@ -205,6 +205,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun installmentDao(): InstallmentDao
     abstract fun cashEntryDao(): CashEntryDao
     abstract fun auditDao(): AuditDao
+    abstract fun reportingDao(): ReportingDao
 
     companion object {
         @Volatile private var instance: AppDatabase? = null
