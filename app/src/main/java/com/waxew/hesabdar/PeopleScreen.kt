@@ -25,17 +25,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.waxew.hesabdar.data.AppDatabase
 import com.waxew.hesabdar.data.PersonEntity
+import com.waxew.hesabdar.data.PersonStatementRow
+import com.waxew.hesabdar.util.PersianDateConverter
 import kotlinx.coroutines.launch
 import java.text.NumberFormat
 import java.util.Locale
 
-/** مدیریت طرف‌حساب و نمایش مانده محاسبه‌شده از گردش واقعی. */
+/** مدیریت طرف‌حساب و ورود به صورت‌حساب هر شخص. */
 @Composable
-fun PeopleScreen(
-    database: AppDatabase,
-    persons: List<PersonEntity>,
-    modifier: Modifier = Modifier
-) {
+fun PeopleScreen(database: AppDatabase, persons: List<PersonEntity>, modifier: Modifier = Modifier) {
     var selected by remember { mutableStateOf<PersonEntity?>(null) }
     if (selected != null) {
         PersonProfileScreen(database, selected!!, onBack = { selected = null }, modifier = modifier)
@@ -54,8 +52,7 @@ fun PeopleScreen(
             onClick = {
                 if (name.isNotBlank()) scope.launch {
                     database.personDao().insert(PersonEntity(name = name.trim(), phone = phone.trim()))
-                    name = ""
-                    phone = ""
+                    name = ""; phone = ""
                 }
             },
             modifier = Modifier.fillMaxWidth()
@@ -67,7 +64,7 @@ fun PeopleScreen(
                     Column(Modifier.padding(12.dp)) {
                         Text(person.name)
                         if (person.phone.isNotBlank()) Text(person.phone)
-                        Text("برای مشاهده گردش حساب لمس کنید")
+                        Text("مشاهده مانده و صورت‌حساب")
                     }
                 }
             }
@@ -75,18 +72,14 @@ fun PeopleScreen(
     }
 }
 
-/** پروفایل مالی طرف‌حساب. */
+/** پروفایل مالی و Timeline گردش حساب شخص. */
 @Composable
-private fun PersonProfileScreen(
-    database: AppDatabase,
-    person: PersonEntity,
-    onBack: () -> Unit,
-    modifier: Modifier = Modifier
-) {
+private fun PersonProfileScreen(database: AppDatabase, person: PersonEntity, onBack: () -> Unit, modifier: Modifier = Modifier) {
     val sales by database.reportingDao().observePersonSales(person.id).collectAsState(initial = 0L)
     val purchases by database.reportingDao().observePersonPurchases(person.id).collectAsState(initial = 0L)
     val received by database.reportingDao().observePersonReceived(person.id).collectAsState(initial = 0L)
     val paid by database.reportingDao().observePersonPaid(person.id).collectAsState(initial = 0L)
+    val statement by database.reportingDao().observePersonStatement(person.id).collectAsState(initial = emptyList())
     val f = remember { NumberFormat.getNumberInstance(Locale.US) }
 
     val customerBalance = sales - received
@@ -97,12 +90,10 @@ private fun PersonProfileScreen(
         item { OutlinedButton(onClick = onBack) { Text("بازگشت") } }
         item { Text(person.name) }
         if (person.phone.isNotBlank()) item { Text(person.phone) }
-        item { MetricCard("کل فروش", sales, f) }
-        item { MetricCard("کل دریافت", received, f) }
-        item { MetricCard("کل خرید", purchases, f) }
-        item { MetricCard("کل پرداخت", paid, f) }
-        item { MetricCard("مانده مشتری", customerBalance, f) }
-        item { MetricCard("مانده تامین‌کننده", supplierBalance, f) }
+        item { MetricCard("فروش خالص", sales, f) }
+        item { MetricCard("دریافت‌ها", received, f) }
+        item { MetricCard("خرید خالص", purchases, f) }
+        item { MetricCard("پرداخت‌ها", paid, f) }
         item {
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(12.dp)) {
@@ -111,6 +102,29 @@ private fun PersonProfileScreen(
                     Text(if (net > 0) "بدهکار به کسب‌وکار" else if (net < 0) "بستانکار از کسب‌وکار" else "تسویه")
                 }
             }
+        }
+        item { Text("صورت‌حساب زمانی") }
+        if (statement.isEmpty()) item { Text("هنوز گردش مالی برای این شخص وجود ندارد.") }
+        items(statement, key = { "${it.eventType}-${it.eventId}-${it.createdAt}" }) { row -> StatementCard(row, f) }
+    }
+}
+
+@Composable
+private fun StatementCard(row: PersonStatementRow, formatter: NumberFormat) {
+    val date = remember(row.createdAt) { PersianDateConverter.fromMillis(row.createdAt).toString() }
+    val sign = when (row.eventType) {
+        "SALE", "PAY", "PURCHASE_RETURN" -> "+"
+        "PURCHASE", "RECEIVE", "SALE_RETURN" -> "−"
+        else -> ""
+    }
+    Card(Modifier.fillMaxWidth()) {
+        Row(Modifier.fillMaxWidth().padding(12.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+            Column {
+                Text(statementTypeFa(row.eventType))
+                Text(date)
+                if (row.note.isNotBlank()) Text(row.note)
+            }
+            Text("$sign${formatter.format(row.amount)}")
         }
     }
 }
@@ -123,4 +137,14 @@ private fun MetricCard(title: String, value: Long, formatter: NumberFormat) {
             Text("${formatter.format(value)} تومان")
         }
     }
+}
+
+private fun statementTypeFa(type: String): String = when (type) {
+    "SALE" -> "فاکتور فروش"
+    "PURCHASE" -> "فاکتور خرید"
+    "SALE_RETURN" -> "برگشت از فروش"
+    "PURCHASE_RETURN" -> "برگشت از خرید"
+    "RECEIVE" -> "دریافت"
+    "PAY" -> "پرداخت"
+    else -> type
 }
