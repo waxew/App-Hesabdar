@@ -3,8 +3,6 @@ name: Android APK
 on:
   push:
     branches: ["main", "develop-v1"]
-  pull_request:
-    branches: ["main"]
   workflow_dispatch:
 
 jobs:
@@ -25,12 +23,15 @@ jobs:
         with:
           gradle-version: "8.9"
 
+      - name: Run unit tests
+        run: gradle :app:testDebugUnitTest --stacktrace
+
       - name: Build debug APK
         run: gradle :app:assembleDebug --stacktrace
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: App-Hesabdar-v0.3.0-debug
+          name: App-Hesabdar-v0.9.0-beta-debug
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
