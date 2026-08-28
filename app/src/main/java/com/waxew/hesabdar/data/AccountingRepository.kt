@@ -17,63 +17,21 @@ data class PostedInvoiceResult(
 
 /**
  * موتور ثبت خرید/فروش و مرجوعی.
- * همه تغییرات فاکتور، ردیف، موجودی، پرداخت و Audit داخل یک Transaction انجام می‌شوند.
+ * فاکتور، موجودی، تسویه، Audit و سند حسابداری خودکار داخل یک Transaction ثبت می‌شوند.
  */
 class AccountingRepository(private val database: AppDatabase) {
 
-    suspend fun postSale(
-        personId: Long?,
-        lines: List<InvoiceDraftLine>,
-        paidAmount: Long,
-        note: String = ""
-    ): PostedInvoiceResult = postInventoryInvoice(
-        type = "SALE",
-        personId = personId,
-        lines = lines,
-        settlementAmount = paidAmount,
-        note = note
-    )
+    suspend fun postSale(personId: Long?, lines: List<InvoiceDraftLine>, paidAmount: Long, note: String = "") =
+        postInventoryInvoice("SALE", personId, lines, paidAmount, note)
 
-    suspend fun postPurchase(
-        personId: Long?,
-        lines: List<InvoiceDraftLine>,
-        paidAmount: Long,
-        note: String = ""
-    ): PostedInvoiceResult = postInventoryInvoice(
-        type = "PURCHASE",
-        personId = personId,
-        lines = lines,
-        settlementAmount = paidAmount,
-        note = note
-    )
+    suspend fun postPurchase(personId: Long?, lines: List<InvoiceDraftLine>, paidAmount: Long, note: String = "") =
+        postInventoryInvoice("PURCHASE", personId, lines, paidAmount, note)
 
-    /** مرجوعی از فروش: کالا به انبار برمی‌گردد و در صورت refund مبلغ به مشتری پرداخت می‌شود. */
-    suspend fun postSaleReturn(
-        personId: Long?,
-        lines: List<InvoiceDraftLine>,
-        refundAmount: Long = 0,
-        note: String = ""
-    ): PostedInvoiceResult = postInventoryInvoice(
-        type = "SALE_RETURN",
-        personId = personId,
-        lines = lines,
-        settlementAmount = refundAmount,
-        note = note
-    )
+    suspend fun postSaleReturn(personId: Long?, lines: List<InvoiceDraftLine>, refundAmount: Long = 0, note: String = "") =
+        postInventoryInvoice("SALE_RETURN", personId, lines, refundAmount, note)
 
-    /** مرجوعی از خرید: کالا از انبار خارج می‌شود و در صورت دریافت وجه، مبلغ از تامین‌کننده دریافت می‌شود. */
-    suspend fun postPurchaseReturn(
-        personId: Long?,
-        lines: List<InvoiceDraftLine>,
-        receivedAmount: Long = 0,
-        note: String = ""
-    ): PostedInvoiceResult = postInventoryInvoice(
-        type = "PURCHASE_RETURN",
-        personId = personId,
-        lines = lines,
-        settlementAmount = receivedAmount,
-        note = note
-    )
+    suspend fun postPurchaseReturn(personId: Long?, lines: List<InvoiceDraftLine>, receivedAmount: Long = 0, note: String = "") =
+        postInventoryInvoice("PURCHASE_RETURN", personId, lines, receivedAmount, note)
 
     private suspend fun postInventoryInvoice(
         type: String,
@@ -103,10 +61,18 @@ class AccountingRepository(private val database: AppDatabase) {
                     "موجودی ${product.name} کافی نیست. موجودی فعلی: ${product.stock}"
                 }
             }
-            ResolvedLine(product, draft, draft.quantity * draft.unitPrice, stockDelta)
+            ResolvedLine(
+                product = product,
+                draft = draft,
+                lineTotal = draft.quantity * draft.unitPrice,
+                stockDelta = stockDelta,
+                estimatedCost = draft.quantity * product.buyPrice
+            )
         }
 
         val total = resolved.sumOf { it.lineTotal }
+        val estimatedCost = resolved.sumOf { it.estimatedCost }
+        require(total > 0) { "مبلغ فاکتور باید بیشتر از صفر باشد." }
         require(settlementAmount <= total) { "مبلغ تسویه نمی‌تواند از مبلغ فاکتور بیشتر باشد." }
 
         val invoiceId = database.invoiceDao().insertInvoice(
@@ -160,12 +126,20 @@ class AccountingRepository(private val database: AppDatabase) {
             )
         }
 
+        AutomaticJournalEngine(database).postInvoiceJournal(
+            invoiceId = invoiceId,
+            type = type,
+            total = total,
+            settlement = settlementAmount,
+            estimatedCost = if (type == "PURCHASE" || type == "PURCHASE_RETURN") 0 else estimatedCost
+        )
+
         database.auditDao().insert(
             AuditLogEntity(
                 action = "POST",
                 entityType = "INVOICE",
                 entityId = invoiceId,
-                detail = "${typeFa(type)} - مبلغ $total - تسویه $settlementAmount"
+                detail = "${typeFa(type)} - مبلغ $total - تسویه $settlementAmount - سند خودکار ثبت شد"
             )
         )
 
@@ -176,7 +150,8 @@ class AccountingRepository(private val database: AppDatabase) {
         val product: ProductEntity,
         val draft: InvoiceDraftLine,
         val lineTotal: Long,
-        val stockDelta: Long
+        val stockDelta: Long,
+        val estimatedCost: Long
     )
 
     private fun typeFa(type: String): String = when (type) {
