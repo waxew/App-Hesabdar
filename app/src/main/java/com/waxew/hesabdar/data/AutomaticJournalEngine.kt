@@ -1,6 +1,7 @@
 package com.waxew.hesabdar.data
 
 import androidx.room.withTransaction
+import java.math.BigInteger
 
 /**
  * کدهای حساب‌های سیستمی مورد استفاده اسناد خودکار.
@@ -80,12 +81,8 @@ class AutomaticJournalEngine(private val database: AppDatabase) {
         val remainder = totals.grandTotal - settlement
         val netBase = totals.subtotal - totals.discountAmount
 
-        // تخفیف کلی خرید بین کالا و خدمت متناسب با سهم هرکدام از جمع اولیه تقسیم می‌شود.
-        val goodsNet = if (totals.subtotal > 0) {
-            (netBase * goodsSubtotal) / totals.subtotal
-        } else {
-            0L
-        }
+        // تقسیم مبلغ خالص خرید بین کالا و خدمت بدون ضرب مستقیم Long انجام می‌شود تا Overflow رخ ندهد.
+        val goodsNet = proportionalShare(netBase, goodsSubtotal, totals.subtotal)
         val serviceNet = netBase - goodsNet
 
         when (type) {
@@ -181,6 +178,15 @@ class AutomaticJournalEngine(private val database: AppDatabase) {
             else -> error("نوع گردش نقدی نامعتبر است.")
         }
         return insertBalancedDocument("AUTO-CASH-$entryId", "سند خودکار گردش نقدی", kind, entryId, lines)
+    }
+
+    /** تقسیم صحیح و امن یک مبلغ بر اساس نسبت part/whole. */
+    private fun proportionalShare(amount: Long, part: Long, whole: Long): Long {
+        if (amount == 0L || part == 0L || whole == 0L) return 0L
+        return BigInteger.valueOf(amount)
+            .multiply(BigInteger.valueOf(part))
+            .divide(BigInteger.valueOf(whole))
+            .longValueExact()
     }
 
     private suspend fun account(code: String): LedgerAccountEntity =
