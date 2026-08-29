@@ -49,8 +49,14 @@ data class ProductEntity(
 )
 
 /**
- * سربرگ فاکتور.
- * totalAmount مبلغ نهایی است و چهار فیلد جدید جزئیات محاسبه را برای گزارش و PDF نگه می‌دارند.
+ * سربرگ فاکتور و چرخه عمر سند.
+ *
+ * status:
+ * - POSTED: سند عادی نهایی‌شده
+ * - VOIDED: سندی که با سند معکوس ابطال شده است
+ * - REVERSAL: سند معکوس سیستمی که اثر سند VOIDED را خنثی می‌کند
+ *
+ * سند نهایی حذف مستقیم نمی‌شود؛ برای حفظ Audit Trail، ابطال با Reversal انجام می‌شود.
  */
 @Entity(
     tableName = "invoices",
@@ -62,7 +68,11 @@ data class ProductEntity(
             onDelete = ForeignKey.SET_NULL
         )
     ],
-    indices = [Index("personId")]
+    indices = [
+        Index("personId"),
+        Index(value = ["documentNumber"], unique = true),
+        Index("reversesInvoiceId")
+    ]
 )
 data class InvoiceEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -75,10 +85,18 @@ data class InvoiceEntity(
     @ColumnInfo(defaultValue = "0") val subtotalAmount: Long = totalAmount,
     @ColumnInfo(defaultValue = "0") val discountAmount: Long = 0,
     @ColumnInfo(defaultValue = "0") val taxAmount: Long = 0,
-    @ColumnInfo(defaultValue = "0") val shippingAmount: Long = 0
+    @ColumnInfo(defaultValue = "0") val shippingAmount: Long = 0,
+    @ColumnInfo(defaultValue = "''") val documentNumber: String = "",
+    @ColumnInfo(defaultValue = "'POSTED'") val status: String = "POSTED",
+    val reversesInvoiceId: Long? = null,
+    val voidedAt: Long? = null,
+    @ColumnInfo(defaultValue = "''") val voidReason: String = ""
 )
 
-/** ردیف فاکتور با Snapshot نام و قیمت زمان ثبت. */
+/**
+ * ردیف فاکتور با Snapshot نام، قیمت فروش/خرید و بهای واحد در لحظه ثبت.
+ * unitCost باعث می‌شود تغییر قیمت خرید آینده سود اسناد قبلی و ابطال آن‌ها را تغییر ندهد.
+ */
 @Entity(
     tableName = "invoice_items",
     foreignKeys = [
@@ -94,7 +112,8 @@ data class InvoiceItemEntity(
     val productNameSnapshot: String,
     val quantity: Long,
     val unitPrice: Long,
-    val lineTotal: Long
+    val lineTotal: Long,
+    @ColumnInfo(defaultValue = "0") val unitCost: Long = 0
 )
 
 /** دریافت یا پرداخت وجه؛ اتصال به فاکتور اختیاری است. */
@@ -174,16 +193,27 @@ interface ProductDao {
     suspend fun adjustStock(productId: Long, delta: Long)
 }
 
+/** DAO اسناد تجاری. */
 @Dao
 interface InvoiceDao {
     @Query("SELECT * FROM invoices ORDER BY createdAt DESC, id DESC")
     fun observeAll(): Flow<List<InvoiceEntity>>
+
+    @Query("SELECT * FROM invoices WHERE id=:id LIMIT 1")
+    suspend fun getById(id: Long): InvoiceEntity?
+
+    @Query("SELECT * FROM invoice_items WHERE invoiceId=:invoiceId ORDER BY id")
+    suspend fun getItems(invoiceId: Long): List<InvoiceItemEntity>
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertInvoice(invoice: InvoiceEntity): Long
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertItems(items: List<InvoiceItemEntity>)
+
+    /** سند اصلی پس از ساخت Reversal به VOIDED تغییر می‌کند؛ ارقام اصلی آن دست‌نخورده می‌مانند. */
+    @Query("UPDATE invoices SET status='VOIDED', voidedAt=:voidedAt, voidReason=:reason WHERE id=:invoiceId AND status='POSTED'")
+    suspend fun markVoided(invoiceId: Long, voidedAt: Long, reason: String): Int
 }
 
 @Dao
@@ -225,7 +255,7 @@ interface DashboardDao {
 
 /**
  * دیتابیس اصلی حسابدار.
- * نسخه 4 اطلاعات حرفه‌ای‌تر کالا و اجزای مبلغ فاکتور را اضافه می‌کند.
+ * نسخه 5 چرخه عمر سند، شماره‌گذاری پایدار و Snapshot بهای تاریخی را اضافه می‌کند.
  */
 @Database(
     entities = [
@@ -242,9 +272,10 @@ interface DashboardDao {
         CheckEntity::class,
         InstallmentEntity::class,
         CashEntryEntity::class,
-        AuditLogEntity::class
+        AuditLogEntity::class,
+        DocumentSequenceEntity::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -261,6 +292,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun cashEntryDao(): CashEntryDao
     abstract fun auditDao(): AuditDao
     abstract fun reportingDao(): ReportingDao
+    abstract fun documentSequenceDao(): DocumentSequenceDao
 
     companion object {
         @Volatile
@@ -310,10 +342,7 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
-        /**
-         * نسخه 3 -> 4: اطلاعات کاتالوگ کالا و اجزای مبلغ فاکتور.
-         * فقط ستون و ایندکس اضافه می‌شوند و هیچ داده قبلی حذف نمی‌شود.
-         */
+        /** نسخه 3 -> 4: کاتالوگ حرفه‌ای‌تر و اجزای مبلغ فاکتور. */
         private val MIGRATION_3_4 = object : Migration(3, 4) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE `products` ADD COLUMN `sku` TEXT NOT NULL DEFAULT ''")
@@ -333,10 +362,43 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * نسخه 4 -> 5: شماره سند، چرخه ابطال و Snapshot بهای واحد.
+         * شماره اسناد قدیمی از ID قبلی ساخته می‌شود و سپس شمارنده هر نوع از بزرگ‌ترین ID همان نوع ادامه می‌یابد.
+         */
+        private val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `invoices` ADD COLUMN `documentNumber` TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE `invoices` ADD COLUMN `status` TEXT NOT NULL DEFAULT 'POSTED'")
+                db.execSQL("ALTER TABLE `invoices` ADD COLUMN `reversesInvoiceId` INTEGER")
+                db.execSQL("ALTER TABLE `invoices` ADD COLUMN `voidedAt` INTEGER")
+                db.execSQL("ALTER TABLE `invoices` ADD COLUMN `voidReason` TEXT NOT NULL DEFAULT ''")
+
+                db.execSQL(
+                    "UPDATE `invoices` SET `documentNumber` = " +
+                        "(CASE `type` WHEN 'SALE' THEN 'S' WHEN 'PURCHASE' THEN 'P' WHEN 'SALE_RETURN' THEN 'SR' WHEN 'PURCHASE_RETURN' THEN 'PR' ELSE 'D' END) " +
+                        "|| '-' || printf('%06d', `id`) WHERE `documentNumber` = ''"
+                )
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_invoices_documentNumber` ON `invoices` (`documentNumber`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_invoices_reversesInvoiceId` ON `invoices` (`reversesInvoiceId`)")
+
+                db.execSQL("ALTER TABLE `invoice_items` ADD COLUMN `unitCost` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL(
+                    "UPDATE `invoice_items` SET `unitCost` = COALESCE((SELECT CASE WHEN p.`isService` = 1 THEN 0 ELSE p.`buyPrice` END FROM `products` p WHERE p.`id` = `invoice_items`.`productId`), 0)"
+                )
+
+                db.execSQL("CREATE TABLE IF NOT EXISTS `document_sequences` (`docType` TEXT NOT NULL, `nextValue` INTEGER NOT NULL, PRIMARY KEY(`docType`))")
+                db.execSQL("INSERT OR REPLACE INTO `document_sequences` (`docType`,`nextValue`) SELECT 'SALE', COALESCE(MAX(`id`),0)+1 FROM `invoices` WHERE `type`='SALE'")
+                db.execSQL("INSERT OR REPLACE INTO `document_sequences` (`docType`,`nextValue`) SELECT 'PURCHASE', COALESCE(MAX(`id`),0)+1 FROM `invoices` WHERE `type`='PURCHASE'")
+                db.execSQL("INSERT OR REPLACE INTO `document_sequences` (`docType`,`nextValue`) SELECT 'SALE_RETURN', COALESCE(MAX(`id`),0)+1 FROM `invoices` WHERE `type`='SALE_RETURN'")
+                db.execSQL("INSERT OR REPLACE INTO `document_sequences` (`docType`,`nextValue`) SELECT 'PURCHASE_RETURN', COALESCE(MAX(`id`),0)+1 FROM `invoices` WHERE `type`='PURCHASE_RETURN'")
+            }
+        }
+
         /** ساخت Singleton دیتابیس با تمام Migrationهای غیرمخرب. */
         fun get(context: Context): AppDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(context.applicationContext, AppDatabase::class.java, "hesabdar.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                 .build()
                 .also { instance = it }
         }
