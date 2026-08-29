@@ -32,7 +32,10 @@ data class InventoryCardRow(
     val createdAt: Long
 )
 
-/** سود برآوردی کالا؛ در نسخه فعلی هزینه با قیمت خرید فعلی کالا برآورد می‌شود. */
+/**
+ * سود برآوردی کالا بر پایه Snapshot بهای واحد همان فاکتور.
+ * برخلاف نسخه‌های قبلی، تغییر قیمت خرید امروز سود فروش‌های گذشته را تغییر نمی‌دهد.
+ */
 data class ProductProfitRow(
     val productId: Long,
     val productName: String,
@@ -91,12 +94,16 @@ interface ReportingDao {
     @Query("SELECT id AS movementId, movementType, quantityDelta, invoiceId, createdAt FROM inventory_movements WHERE productId=:productId ORDER BY createdAt DESC, id DESC")
     fun observeInventoryCard(productId: Long): Flow<List<InventoryCardRow>>
 
+    /**
+     * فروش و برگشت فروش با علامت معکوس جمع می‌شوند.
+     * هزینه از ii.unitCost گرفته می‌شود تا سود تاریخی نسبت به تغییر قیمت فعلی کالا ثابت بماند.
+     */
     @Query("""
         SELECT p.id AS productId,
                p.name AS productName,
                COALESCE(SUM(CASE WHEN i.type='SALE' THEN ii.quantity WHEN i.type='SALE_RETURN' THEN -ii.quantity ELSE 0 END),0) AS soldQuantity,
                COALESCE(SUM(CASE WHEN i.type='SALE' THEN ii.lineTotal WHEN i.type='SALE_RETURN' THEN -ii.lineTotal ELSE 0 END),0) AS salesAmount,
-               COALESCE(SUM(CASE WHEN i.type='SALE' THEN ii.quantity*p.buyPrice WHEN i.type='SALE_RETURN' THEN -(ii.quantity*p.buyPrice) ELSE 0 END),0) AS estimatedCost
+               COALESCE(SUM(CASE WHEN i.type='SALE' THEN ii.quantity*ii.unitCost WHEN i.type='SALE_RETURN' THEN -(ii.quantity*ii.unitCost) ELSE 0 END),0) AS estimatedCost
         FROM products p
         LEFT JOIN invoice_items ii ON ii.productId=p.id
         LEFT JOIN invoices i ON i.id=ii.invoiceId
