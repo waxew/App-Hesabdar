@@ -19,11 +19,12 @@ data class InvoiceCharges(
 /** نتیجه ثبت موفق سند تجاری. */
 data class PostedInvoiceResult(
     val invoiceId: Long,
-    val totalAmount: Long
+    val totalAmount: Long,
+    val documentNumber: String
 )
 
 /**
- * موتور ثبت خرید/فروش و مرجوعی.
+ * موتور ثبت خرید/فروش، مرجوعی و ابطال.
  * فاکتور، موجودی، تسویه، Audit و سند حسابداری خودکار داخل یک Transaction ثبت می‌شوند.
  */
 class AccountingRepository(private val database: AppDatabase) {
@@ -59,6 +60,144 @@ class AccountingRepository(private val database: AppDatabase) {
         charges: InvoiceCharges = InvoiceCharges(),
         note: String = ""
     ) = postInventoryInvoice("PURCHASE_RETURN", personId, lines, receivedAmount, charges, note)
+
+    /**
+     * ابطال حرفه‌ای سند نهایی‌شده.
+     * اصل سند حذف یا بازنویسی نمی‌شود؛ یک سند معکوس کامل برای وجه، انبار و دفتر دوبل ایجاد می‌شود
+     * و سپس سند اولیه به VOIDED تغییر وضعیت می‌دهد.
+     */
+    suspend fun voidInvoice(invoiceId: Long, reason: String): PostedInvoiceResult = database.withTransaction {
+        require(reason.isNotBlank()) { "علت ابطال را وارد کنید." }
+        val original = database.invoiceDao().getById(invoiceId) ?: error("فاکتور پیدا نشد.")
+        require(original.status == "POSTED") { "فقط سند نهایی و ابطال‌نشده قابل ابطال است." }
+        require(original.type == "SALE" || original.type == "PURCHASE") {
+            "ابطال خودکار در این نسخه برای فاکتور فروش و خرید اصلی فعال است."
+        }
+
+        val originalItems = database.invoiceDao().getItems(invoiceId)
+        require(originalItems.isNotEmpty()) { "ردیف‌های فاکتور برای ابطال پیدا نشد." }
+
+        val reverseType = if (original.type == "SALE") "SALE_RETURN" else "PURCHASE_RETURN"
+        val reverseNumber = DocumentNumberGenerator(database).next(reverseType)
+
+        data class ReversalLine(
+            val item: InvoiceItemEntity,
+            val product: ProductEntity,
+            val stockDelta: Long
+        )
+
+        val reversalLines = originalItems.map { item ->
+            val productId = item.productId ?: error("کالای یکی از ردیف‌ها حذف شده و ابطال امن ممکن نیست.")
+            val product = database.productDao().getById(productId) ?: error("کالای ${item.productNameSnapshot} پیدا نشد.")
+            val stockDelta = if (product.isService) {
+                0L
+            } else if (original.type == "SALE") {
+                item.quantity
+            } else {
+                -item.quantity
+            }
+
+            if (stockDelta < 0) {
+                require(product.stock >= -stockDelta) {
+                    "برای ابطال خرید، موجودی ${product.name} کافی نیست. ابتدا گردش‌های بعدی کالا را بررسی کنید."
+                }
+            }
+            ReversalLine(item, product, stockDelta)
+        }
+
+        val totals = InvoiceTotals(
+            subtotal = original.subtotalAmount,
+            discountAmount = original.discountAmount,
+            taxAmount = original.taxAmount,
+            shippingAmount = original.shippingAmount,
+            grandTotal = original.totalAmount
+        )
+        val estimatedCost = reversalLines.fold(0L) { acc, row ->
+            if (row.product.isService) acc else Math.addExact(acc, Math.multiplyExact(row.item.quantity, row.item.unitCost))
+        }
+        val goodsSubtotal = reversalLines.filterNot { it.product.isService }
+            .fold(0L) { acc, row -> Math.addExact(acc, row.item.lineTotal) }
+        val serviceSubtotal = reversalLines.filter { it.product.isService }
+            .fold(0L) { acc, row -> Math.addExact(acc, row.item.lineTotal) }
+
+        val reversalId = database.invoiceDao().insertInvoice(
+            InvoiceEntity(
+                type = reverseType,
+                personId = original.personId,
+                totalAmount = original.totalAmount,
+                paidAmount = original.paidAmount,
+                note = "ابطال ${original.documentNumber}: ${reason.trim()}",
+                subtotalAmount = original.subtotalAmount,
+                discountAmount = original.discountAmount,
+                taxAmount = original.taxAmount,
+                shippingAmount = original.shippingAmount,
+                documentNumber = reverseNumber,
+                status = "REVERSAL",
+                reversesInvoiceId = original.id
+            )
+        )
+
+        database.invoiceDao().insertItems(
+            reversalLines.map { row ->
+                row.item.copy(
+                    id = 0,
+                    invoiceId = reversalId
+                )
+            }
+        )
+
+        reversalLines.filter { it.stockDelta != 0L }.forEach { row ->
+            database.productDao().adjustStock(row.product.id, row.stockDelta)
+            database.inventoryDao().insert(
+                InventoryMovementEntity(
+                    productId = row.product.id,
+                    invoiceId = reversalId,
+                    movementType = reverseType,
+                    quantityDelta = row.stockDelta
+                )
+            )
+        }
+
+        if (original.paidAmount > 0) {
+            database.paymentDao().insert(
+                PaymentEntity(
+                    direction = if (original.type == "SALE") "PAY" else "RECEIVE",
+                    invoiceId = reversalId,
+                    personId = original.personId,
+                    amount = original.paidAmount,
+                    note = "برگشت تسویه بابت ابطال ${original.documentNumber}"
+                )
+            )
+        }
+
+        AutomaticJournalEngine(database).postInvoiceJournal(
+            invoiceId = reversalId,
+            type = reverseType,
+            totals = totals,
+            settlement = original.paidAmount,
+            estimatedCost = if (original.type == "SALE") estimatedCost else 0L,
+            goodsSubtotal = goodsSubtotal,
+            serviceSubtotal = serviceSubtotal
+        )
+
+        val changed = database.invoiceDao().markVoided(
+            invoiceId = original.id,
+            voidedAt = System.currentTimeMillis(),
+            reason = reason.trim()
+        )
+        require(changed == 1) { "وضعیت فاکتور تغییر کرده است؛ عملیات ابطال متوقف شد." }
+
+        database.auditDao().insert(
+            AuditLogEntity(
+                action = "VOID",
+                entityType = "INVOICE",
+                entityId = original.id,
+                detail = "ابطال ${original.documentNumber} با سند معکوس $reverseNumber - علت: ${reason.trim()}"
+            )
+        )
+
+        PostedInvoiceResult(reversalId, original.totalAmount, reverseNumber)
+    }
 
     /**
      * ثبت نهایی فاکتور. خدمت‌ها عمداً گردش موجودی ایجاد نمی‌کنند؛ بنابراین یک فاکتور می‌تواند
@@ -100,12 +239,14 @@ class AccountingRepository(private val database: AppDatabase) {
                 }
             }
 
+            val unitCost = if (product.isService) 0L else product.buyPrice
             ResolvedLine(
                 product = product,
                 draft = draft,
                 lineTotal = Math.multiplyExact(draft.quantity, draft.unitPrice),
                 stockDelta = stockDelta,
-                estimatedCost = if (product.isService) 0 else Math.multiplyExact(draft.quantity, product.buyPrice)
+                unitCost = unitCost,
+                estimatedCost = Math.multiplyExact(draft.quantity, unitCost)
             )
         }
 
@@ -124,6 +265,7 @@ class AccountingRepository(private val database: AppDatabase) {
 
         require(settlementAmount <= totals.grandTotal) { "مبلغ تسویه نمی‌تواند از مبلغ نهایی فاکتور بیشتر باشد." }
 
+        val documentNumber = DocumentNumberGenerator(database).next(type)
         val invoiceId = database.invoiceDao().insertInvoice(
             InvoiceEntity(
                 type = type,
@@ -134,7 +276,9 @@ class AccountingRepository(private val database: AppDatabase) {
                 subtotalAmount = totals.subtotal,
                 discountAmount = totals.discountAmount,
                 taxAmount = totals.taxAmount,
-                shippingAmount = totals.shippingAmount
+                shippingAmount = totals.shippingAmount,
+                documentNumber = documentNumber,
+                status = "POSTED"
             )
         )
 
@@ -146,7 +290,8 @@ class AccountingRepository(private val database: AppDatabase) {
                     productNameSnapshot = row.product.name,
                     quantity = row.draft.quantity,
                     unitPrice = row.draft.unitPrice,
-                    lineTotal = row.lineTotal
+                    lineTotal = row.lineTotal,
+                    unitCost = row.unitCost
                 )
             }
         )
@@ -175,7 +320,7 @@ class AccountingRepository(private val database: AppDatabase) {
                     invoiceId = invoiceId,
                     personId = personId,
                     amount = settlementAmount,
-                    note = "تسویه هنگام ثبت ${typeFa(type)}"
+                    note = "تسویه هنگام ثبت $documentNumber"
                 )
             )
         }
@@ -196,11 +341,11 @@ class AccountingRepository(private val database: AppDatabase) {
                 action = "POST",
                 entityType = "INVOICE",
                 entityId = invoiceId,
-                detail = "${typeFa(type)} - جمع ${totals.subtotal} - تخفیف ${totals.discountAmount} - مالیات ${totals.taxAmount} - حمل ${totals.shippingAmount} - نهایی ${totals.grandTotal}"
+                detail = "$documentNumber ${typeFa(type)} - جمع ${totals.subtotal} - تخفیف ${totals.discountAmount} - مالیات ${totals.taxAmount} - حمل ${totals.shippingAmount} - نهایی ${totals.grandTotal}"
             )
         )
 
-        PostedInvoiceResult(invoiceId, totals.grandTotal)
+        PostedInvoiceResult(invoiceId, totals.grandTotal, documentNumber)
     }
 
     private data class ResolvedLine(
@@ -208,6 +353,7 @@ class AccountingRepository(private val database: AppDatabase) {
         val draft: InvoiceDraftLine,
         val lineTotal: Long,
         val stockDelta: Long,
+        val unitCost: Long,
         val estimatedCost: Long
     )
 
