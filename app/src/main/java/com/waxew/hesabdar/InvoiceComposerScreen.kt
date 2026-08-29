@@ -10,10 +10,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -50,7 +52,7 @@ private data class UiInvoiceLine(
 
 /**
  * فاکتور چندردیفی فروش، خرید و مرجوعی.
- * این صفحه تخفیف مبلغی، درصد مالیات، حمل، جستجوی کالا/بارکد و خروجی PDF را پوشش می‌دهد.
+ * اسناد نهایی شماره پایدار دارند و فروش/خرید ثبت‌شده فقط با سند معکوس قابل ابطال است.
  */
 @Composable
 fun InvoiceComposerScreen(
@@ -81,18 +83,24 @@ fun InvoiceComposerScreen(
     var message by remember { mutableStateOf("") }
     var nextKey by remember { mutableStateOf(1L) }
 
+    // در صورت انتخاب ابطال، ابتدا Dialog علت را می‌گیرد؛ عملیات مالی بدون تایید اجرا نمی‌شود.
+    var pendingVoid by remember { mutableStateOf<InvoiceEntity?>(null) }
+    var voidReason by remember { mutableStateOf("") }
+
     val selectedProduct = products.firstOrNull { it.id == productId }
     val filteredProducts = remember(products, productSearch) {
-        val q = productSearch.trim()
-        if (q.isBlank()) products else products.filter { product ->
-            product.name.contains(q, ignoreCase = true) ||
-                product.sku.contains(q, ignoreCase = true) ||
-                product.barcode.contains(q, ignoreCase = true) ||
-                product.category.contains(q, ignoreCase = true)
+        val query = productSearch.trim()
+        if (query.isBlank()) products else products.filter { product ->
+            product.name.contains(query, ignoreCase = true) ||
+                product.sku.contains(query, ignoreCase = true) ||
+                product.barcode.contains(query, ignoreCase = true) ||
+                product.category.contains(query, ignoreCase = true)
         }
     }
 
-    val subtotal = runCatching { cart.fold(0L) { acc, line -> Math.addExact(acc, line.total) } }.getOrDefault(0L)
+    val subtotal = runCatching {
+        cart.fold(0L) { acc, line -> Math.addExact(acc, line.total) }
+    }.getOrDefault(0L)
     val discount = discountText.toLongOrNull() ?: 0L
     val taxPercent = taxPercentText.toIntOrNull() ?: 0
     val shipping = shippingText.toLongOrNull() ?: 0L
@@ -233,11 +241,7 @@ fun InvoiceComposerScreen(
 
                 val lines = cart.map { InvoiceDraftLine(it.product.id, it.quantity, it.unitPrice) }
                 val settlement = settlementText.toLongOrNull() ?: 0
-                val charges = InvoiceCharges(
-                    discountAmount = discount,
-                    taxPercent = taxPercent,
-                    shippingAmount = shipping
-                )
+                val charges = InvoiceCharges(discountAmount = discount, taxPercent = taxPercent, shippingAmount = shipping)
 
                 scope.launch {
                     runCatching {
@@ -247,8 +251,8 @@ fun InvoiceComposerScreen(
                             "SALE_RETURN" -> repo.postSaleReturn(personId, lines, settlement, charges, note)
                             else -> repo.postPurchaseReturn(personId, lines, settlement, charges, note)
                         }
-                    }.onSuccess {
-                        message = "${typeFa(type)} شماره ${it.invoiceId} به مبلغ ${formatter.format(it.totalAmount)} تومان ثبت شد."
+                    }.onSuccess { result ->
+                        message = "${typeFa(type)} ${result.documentNumber} به مبلغ ${formatter.format(result.totalAmount)} تومان ثبت شد."
                         cart.clear()
                         settlementText = ""
                         discountText = ""
@@ -262,24 +266,71 @@ fun InvoiceComposerScreen(
         if (message.isNotBlank()) item { Text(message) }
 
         item { Text("آخرین اسناد تجاری") }
-        items(invoices.take(20), key = { it.id }) { invoice ->
+        items(invoices.take(30), key = { it.id }) { invoice ->
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("#${invoice.id} - ${typeFa(invoice.type)}")
+                    Text("${invoice.documentNumber.ifBlank { "#${invoice.id}" }} — ${typeFa(invoice.type)}")
+                    Text("وضعیت: ${statusFa(invoice.status)}")
                     Text("مبلغ نهایی ${formatter.format(invoice.totalAmount)} تومان")
                     if (invoice.discountAmount > 0) Text("تخفیف ${formatter.format(invoice.discountAmount)} تومان")
                     if (invoice.taxAmount > 0) Text("مالیات ${formatter.format(invoice.taxAmount)} تومان")
                     if (invoice.shippingAmount > 0) Text("حمل ${formatter.format(invoice.shippingAmount)} تومان")
                     Text("تسویه ${formatter.format(invoice.paidAmount)} تومان")
                     Text("مانده ${formatter.format((invoice.totalAmount - invoice.paidAmount).coerceAtLeast(0))} تومان")
+                    if (invoice.reversesInvoiceId != null) Text("سند معکوس فاکتور #${invoice.reversesInvoiceId}")
+                    if (invoice.status == "VOIDED" && invoice.voidReason.isNotBlank()) Text("علت ابطال: ${invoice.voidReason}")
+
                     OutlinedButton(onClick = {
                         runCatching { exportManager.exportInvoicePdf(invoice.id) }
                             .onSuccess { message = "PDF فاکتور ساخته شد: ${it.name}" }
                             .onFailure { message = it.message ?: "خطا در ساخت PDF" }
                     }) { Text("ساخت PDF فاکتور") }
+
+                    if (invoice.status == "POSTED" && (invoice.type == "SALE" || invoice.type == "PURCHASE")) {
+                        OutlinedButton(onClick = {
+                            pendingVoid = invoice
+                            voidReason = ""
+                        }) { Text("ابطال با سند معکوس") }
+                    }
                 }
             }
         }
+    }
+
+    // Dialog ابطال خارج از LazyColumn قرار دارد تا روی صفحه فعلی نمایش داده شود و علت اجباری باشد.
+    val invoiceToVoid = pendingVoid
+    if (invoiceToVoid != null) {
+        AlertDialog(
+            onDismissRequest = { pendingVoid = null; voidReason = "" },
+            title = { Text("ابطال ${invoiceToVoid.documentNumber.ifBlank { "فاکتور #${invoiceToVoid.id}" }}") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("این سند روی حساب‌ها و موجودی اثر گذاشته است. برنامه اصل سند را حذف نمی‌کند و یک سند معکوس ایجاد می‌کند.")
+                    TextField(voidReason, { voidReason = it }, label = { Text("علت ابطال") }, modifier = Modifier.fillMaxWidth())
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val target = invoiceToVoid
+                    if (voidReason.isBlank()) {
+                        message = "علت ابطال الزامی است."
+                        return@TextButton
+                    }
+                    pendingVoid = null
+                    scope.launch {
+                        runCatching { repo.voidInvoice(target.id, voidReason) }
+                            .onSuccess { result ->
+                                message = "${target.documentNumber} با سند معکوس ${result.documentNumber} ابطال شد."
+                                voidReason = ""
+                            }
+                            .onFailure { message = it.message ?: "خطا در ابطال فاکتور" }
+                    }
+                }) { Text("تایید ابطال") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingVoid = null; voidReason = "" }) { Text("انصراف") }
+            }
+        )
     }
 }
 
@@ -301,4 +352,11 @@ private fun typeFa(type: String): String = when (type) {
     "SALE_RETURN" -> "برگشت از فروش"
     "PURCHASE_RETURN" -> "برگشت از خرید"
     else -> type
+}
+
+private fun statusFa(status: String): String = when (status) {
+    "POSTED" -> "ثبت نهایی"
+    "VOIDED" -> "باطل‌شده"
+    "REVERSAL" -> "سند معکوس سیستمی"
+    else -> status
 }
