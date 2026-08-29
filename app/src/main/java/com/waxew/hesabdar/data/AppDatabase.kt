@@ -16,6 +16,10 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 
+/**
+ * طرف حساب محلی.
+ * مانده حساب عمداً در این جدول نگهداری نمی‌شود و از گردش واقعی مالی استخراج می‌شود.
+ */
 @Entity(tableName = "persons")
 data class PersonEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -23,18 +27,39 @@ data class PersonEntity(
     val phone: String = ""
 )
 
-@Entity(tableName = "products")
+/**
+ * کالای قابل فروش یا خدمت.
+ * فیلدهای SKU، بارکد، دسته، واحد و حداقل موجودی از نسخه دیتابیس 4 اضافه شده‌اند.
+ */
+@Entity(tableName = "products", indices = [Index("sku"), Index("barcode")])
 data class ProductEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val name: String,
     val buyPrice: Long = 0,
     val sellPrice: Long = 0,
-    val stock: Long = 0
+    val stock: Long = 0,
+    val sku: String = "",
+    val barcode: String = "",
+    val category: String = "",
+    val unit: String = "عدد",
+    val minStock: Long = 0,
+    val isService: Boolean = false
 )
 
+/**
+ * سربرگ فاکتور.
+ * totalAmount مبلغ نهایی است و چهار فیلد جدید جزئیات محاسبه را برای گزارش و PDF نگه می‌دارند.
+ */
 @Entity(
     tableName = "invoices",
-    foreignKeys = [ForeignKey(entity = PersonEntity::class, parentColumns = ["id"], childColumns = ["personId"], onDelete = ForeignKey.SET_NULL)],
+    foreignKeys = [
+        ForeignKey(
+            entity = PersonEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["personId"],
+            onDelete = ForeignKey.SET_NULL
+        )
+    ],
     indices = [Index("personId")]
 )
 data class InvoiceEntity(
@@ -44,9 +69,14 @@ data class InvoiceEntity(
     val totalAmount: Long,
     val paidAmount: Long = 0,
     val note: String = "",
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+    val subtotalAmount: Long = totalAmount,
+    val discountAmount: Long = 0,
+    val taxAmount: Long = 0,
+    val shippingAmount: Long = 0
 )
 
+/** ردیف فاکتور با Snapshot نام و قیمت زمان ثبت. */
 @Entity(
     tableName = "invoice_items",
     foreignKeys = [
@@ -65,6 +95,7 @@ data class InvoiceItemEntity(
     val lineTotal: Long
 )
 
+/** دریافت یا پرداخت وجه؛ اتصال به فاکتور اختیاری است. */
 @Entity(
     tableName = "payments",
     foreignKeys = [
@@ -83,6 +114,7 @@ data class PaymentEntity(
     val createdAt: Long = System.currentTimeMillis()
 )
 
+/** کارتکس انبار؛ برای خدمت‌ها گردش موجودی ساخته نمی‌شود. */
 @Entity(
     tableName = "inventory_movements",
     foreignKeys = [
@@ -119,6 +151,9 @@ interface ProductDao {
 
     @Query("SELECT * FROM products WHERE id = :id LIMIT 1")
     suspend fun getById(id: Long): ProductEntity?
+
+    @Query("SELECT * FROM products WHERE isService = 0 AND minStock > 0 AND stock <= minStock ORDER BY stock ASC")
+    fun observeLowStock(): Flow<List<ProductEntity>>
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insert(product: ProductEntity): Long
@@ -157,6 +192,7 @@ interface InventoryDao {
     suspend fun insert(movement: InventoryMovementEntity): Long
 }
 
+/** Queryهای کارت‌های داشبورد. */
 @Dao
 interface DashboardDao {
     @Query("SELECT COALESCE(SUM(CASE WHEN type='SALE' THEN totalAmount WHEN type='SALE_RETURN' THEN -totalAmount ELSE 0 END),0) FROM invoices")
@@ -170,8 +206,15 @@ interface DashboardDao {
 
     @Query("SELECT COALESCE(SUM(CASE WHEN type='PURCHASE' THEN (totalAmount-paidAmount) WHEN type='PURCHASE_RETURN' THEN -(totalAmount-paidAmount) ELSE 0 END),0) FROM invoices")
     fun observePayables(): Flow<Long>
+
+    @Query("SELECT COUNT(*) FROM products WHERE isService = 0 AND minStock > 0 AND stock <= minStock")
+    fun observeLowStockCount(): Flow<Int>
 }
 
+/**
+ * دیتابیس اصلی حسابدار.
+ * نسخه 4 اطلاعات حرفه‌ای‌تر کالا و اجزای مبلغ فاکتور را اضافه می‌کند.
+ */
 @Database(
     entities = [
         PersonEntity::class,
@@ -189,7 +232,7 @@ interface DashboardDao {
         CashEntryEntity::class,
         AuditLogEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -208,8 +251,10 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun reportingDao(): ReportingDao
 
     companion object {
-        @Volatile private var instance: AppDatabase? = null
+        @Volatile
+        private var instance: AppDatabase? = null
 
+        /** نسخه 1 -> 2: فاکتور، پرداخت و کارتکس. */
         private val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("CREATE TABLE IF NOT EXISTS `invoices` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `type` TEXT NOT NULL, `personId` INTEGER, `totalAmount` INTEGER NOT NULL, `paidAmount` INTEGER NOT NULL, `note` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, FOREIGN KEY(`personId`) REFERENCES `persons`(`id`) ON UPDATE NO ACTION ON DELETE SET NULL)")
@@ -226,6 +271,7 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /** نسخه 2 -> 3: خزانه، کدینگ، اسناد حسابداری، چک، اقساط و Audit. */
         private val MIGRATION_2_3 = object : Migration(2, 3) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("CREATE TABLE IF NOT EXISTS `treasury_accounts` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `type` TEXT NOT NULL, `openingBalance` INTEGER NOT NULL, `isActive` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL)")
@@ -252,9 +298,33 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * نسخه 3 -> 4: اطلاعات کاتالوگ کالا و اجزای مبلغ فاکتور.
+         * فقط ستون و ایندکس اضافه می‌شوند و هیچ داده قبلی حذف نمی‌شود.
+         */
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `products` ADD COLUMN `sku` TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE `products` ADD COLUMN `barcode` TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE `products` ADD COLUMN `category` TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE `products` ADD COLUMN `unit` TEXT NOT NULL DEFAULT 'عدد'")
+                db.execSQL("ALTER TABLE `products` ADD COLUMN `minStock` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `products` ADD COLUMN `isService` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_products_sku` ON `products` (`sku`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_products_barcode` ON `products` (`barcode`)")
+
+                db.execSQL("ALTER TABLE `invoices` ADD COLUMN `subtotalAmount` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `invoices` ADD COLUMN `discountAmount` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `invoices` ADD COLUMN `taxAmount` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `invoices` ADD COLUMN `shippingAmount` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("UPDATE `invoices` SET `subtotalAmount` = `totalAmount` WHERE `subtotalAmount` = 0")
+            }
+        }
+
+        /** ساخت Singleton دیتابیس با تمام Migrationهای غیرمخرب. */
         fun get(context: Context): AppDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(context.applicationContext, AppDatabase::class.java, "hesabdar.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                 .build()
                 .also { instance = it }
         }
