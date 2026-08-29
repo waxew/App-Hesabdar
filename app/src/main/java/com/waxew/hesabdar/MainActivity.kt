@@ -103,6 +103,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** Android 13+ برای اعلان سررسیدها مجوز Runtime لازم دارد. */
     private fun requestNotificationPermissionIfNeeded() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
@@ -173,6 +174,7 @@ private fun HesabdarApp(database: AppDatabase) {
     val purchases by database.dashboardDao().observePurchasesTotal().collectAsState(initial = 0L)
     val receivables by database.dashboardDao().observeReceivables().collectAsState(initial = 0L)
     val payables by database.dashboardDao().observePayables().collectAsState(initial = 0L)
+    val lowStockCount by database.dashboardDao().observeLowStockCount().collectAsState(initial = 0)
     val expenses by database.cashEntryDao().observeExpenses().collectAsState(initial = 0L)
     val otherIncome by database.cashEntryDao().observeOtherIncome().collectAsState(initial = 0L)
     val pendingChecks by database.checkDao().observePending().collectAsState(initial = emptyList())
@@ -257,7 +259,20 @@ private fun HesabdarApp(database: AppDatabase) {
         ) { padding ->
             val contentModifier = Modifier.padding(padding)
             when (tab) {
-                0 -> DashboardScreen(persons.size, products.size, invoices.size, sales, purchases, receivables, payables, otherIncome, expenses, pendingChecks.size, contentModifier)
+                0 -> DashboardScreen(
+                    persons = persons.size,
+                    products = products.size,
+                    invoices = invoices.size,
+                    sales = sales,
+                    purchases = purchases,
+                    receivables = receivables,
+                    payables = payables,
+                    income = otherIncome,
+                    expenses = expenses,
+                    pendingChecks = pendingChecks.size,
+                    lowStockCount = lowStockCount,
+                    modifier = contentModifier
+                )
                 1 -> PeopleScreen(database, persons, contentModifier)
                 2 -> ProductManagementScreen(database, products, contentModifier)
                 3 -> InvoiceComposerScreen(database, persons, products, invoices, contentModifier)
@@ -270,6 +285,7 @@ private fun HesabdarApp(database: AppDatabase) {
     }
 }
 
+/** آیتم تکرارشونده Drawer برای کاهش کد تکراری. */
 @Composable
 private fun DrawerItem(label: String, selected: Boolean, onClick: () -> Unit) {
     NavigationDrawerItem(label = { Text(label) }, selected = selected, onClick = onClick)
@@ -301,13 +317,13 @@ private fun ContactScreen(modifier: Modifier = Modifier) {
 private fun AboutScreen(modifier: Modifier = Modifier) {
     Column(modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("حسابدار", style = MaterialTheme.typography.headlineMedium)
-        Text("نرم‌افزار حسابداری فارسی و آفلاین برای مدیریت فروش، خرید، اشخاص، انبار، خزانه، چک، اقساط و گزارش‌های مالی.")
-        Text("نسخه 0.9.0 Beta")
+        Text("نرم‌افزار حسابداری فارسی و آفلاین برای مدیریت فروش، خرید، اشخاص، کالا و خدمت، انبار، خزانه، چک، اقساط و گزارش‌های مالی.")
+        Text("نسخه 0.10.0 Beta")
         Text("اطلاعات اصلی برنامه در دیتابیس محلی دستگاه ذخیره می‌شوند.")
     }
 }
 
-/** داشبورد مدیریتی اصلی. */
+/** داشبورد مدیریتی اصلی با هشدار موجودی پایین. */
 @Composable
 private fun DashboardScreen(
     persons: Int,
@@ -320,26 +336,48 @@ private fun DashboardScreen(
     income: Long,
     expenses: Long,
     pendingChecks: Int,
+    lowStockCount: Int,
     modifier: Modifier = Modifier
 ) {
-    val f = remember { NumberFormat.getNumberInstance(Locale.US) }
+    val formatter = remember { NumberFormat.getNumberInstance(Locale.US) }
     val netSimple = sales + income - purchases - expenses
     val today = remember { PersianDateConverter.now().toString() }
+
     LazyColumn(modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        item { Text("حسابدار", style = MaterialTheme.typography.headlineMedium); Text("تاریخ شمسی: $today"); Text("اطلاعات اصلی روی همین گوشی ذخیره می‌شود.") }
-        item { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) { Summary("اشخاص", persons.toString(), Modifier.weight(1f)); Summary("کالا", products.toString(), Modifier.weight(1f)) } }
-        item { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) { Summary("اسناد تجاری", invoices.toString(), Modifier.weight(1f)); Summary("چک باز", pendingChecks.toString(), Modifier.weight(1f)) } }
-        item { Summary("فروش خالص", "${f.format(sales)} تومان") }
-        item { Summary("خرید خالص", "${f.format(purchases)} تومان") }
-        item { Summary("مطالبات", "${f.format(receivables)} تومان") }
-        item { Summary("بدهی", "${f.format(payables)} تومان") }
-        item { Summary("سایر درآمد", "${f.format(income)} تومان") }
-        item { Summary("هزینه", "${f.format(expenses)} تومان") }
-        item { Summary("خالص ساده", "${f.format(netSimple)} تومان") }
+        item {
+            Text("حسابدار", style = MaterialTheme.typography.headlineMedium)
+            Text("تاریخ شمسی: $today")
+            Text("اطلاعات اصلی روی همین گوشی ذخیره می‌شود.")
+        }
+        item {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Summary("اشخاص", persons.toString(), Modifier.weight(1f))
+                Summary("کالا / خدمت", products.toString(), Modifier.weight(1f))
+            }
+        }
+        item {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Summary("اسناد تجاری", invoices.toString(), Modifier.weight(1f))
+                Summary("چک باز", pendingChecks.toString(), Modifier.weight(1f))
+            }
+        }
+        if (lowStockCount > 0) item { Summary("نیازمند تامین موجودی", "$lowStockCount کالا") }
+        item { Summary("فروش خالص", "${formatter.format(sales)} تومان") }
+        item { Summary("خرید خالص", "${formatter.format(purchases)} تومان") }
+        item { Summary("مطالبات", "${formatter.format(receivables)} تومان") }
+        item { Summary("بدهی", "${formatter.format(payables)} تومان") }
+        item { Summary("سایر درآمد", "${formatter.format(income)} تومان") }
+        item { Summary("هزینه", "${formatter.format(expenses)} تومان") }
+        item { Summary("خالص ساده", "${formatter.format(netSimple)} تومان") }
     }
 }
 
 @Composable
 private fun Summary(title: String, value: String, modifier: Modifier = Modifier.fillMaxWidth()) {
-    Card(modifier) { Column(Modifier.padding(12.dp)) { Text(title); Text(value, style = MaterialTheme.typography.titleMedium) } }
+    Card(modifier) {
+        Column(Modifier.padding(12.dp)) {
+            Text(title)
+            Text(value, style = MaterialTheme.typography.titleMedium)
+        }
+    }
 }
