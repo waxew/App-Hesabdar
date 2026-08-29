@@ -1,6 +1,7 @@
 package com.waxew.hesabdar.data
 
 import android.content.Context
+import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Database
 import androidx.room.Entity
@@ -30,7 +31,7 @@ data class PersonEntity(
 
 /**
  * کالای قابل فروش یا خدمت.
- * فیلدهای SKU، بارکد، دسته، واحد و حداقل موجودی از نسخه دیتابیس 4 اضافه شده‌اند.
+ * defaultValueهای Room دقیقاً با Migration نسخه 3 به 4 یکسان نگه داشته شده‌اند تا Upgrade معتبر بماند.
  */
 @Entity(tableName = "products", indices = [Index("sku"), Index("barcode")])
 data class ProductEntity(
@@ -39,12 +40,12 @@ data class ProductEntity(
     val buyPrice: Long = 0,
     val sellPrice: Long = 0,
     val stock: Long = 0,
-    val sku: String = "",
-    val barcode: String = "",
-    val category: String = "",
-    val unit: String = "عدد",
-    val minStock: Long = 0,
-    val isService: Boolean = false
+    @ColumnInfo(defaultValue = "''") val sku: String = "",
+    @ColumnInfo(defaultValue = "''") val barcode: String = "",
+    @ColumnInfo(defaultValue = "''") val category: String = "",
+    @ColumnInfo(defaultValue = "'عدد'") val unit: String = "عدد",
+    @ColumnInfo(defaultValue = "0") val minStock: Long = 0,
+    @ColumnInfo(defaultValue = "0") val isService: Boolean = false
 )
 
 /**
@@ -71,10 +72,10 @@ data class InvoiceEntity(
     val paidAmount: Long = 0,
     val note: String = "",
     val createdAt: Long = System.currentTimeMillis(),
-    val subtotalAmount: Long = totalAmount,
-    val discountAmount: Long = 0,
-    val taxAmount: Long = 0,
-    val shippingAmount: Long = 0
+    @ColumnInfo(defaultValue = "0") val subtotalAmount: Long = totalAmount,
+    @ColumnInfo(defaultValue = "0") val discountAmount: Long = 0,
+    @ColumnInfo(defaultValue = "0") val taxAmount: Long = 0,
+    @ColumnInfo(defaultValue = "0") val shippingAmount: Long = 0
 )
 
 /** ردیف فاکتور با Snapshot نام و قیمت زمان ثبت. */
