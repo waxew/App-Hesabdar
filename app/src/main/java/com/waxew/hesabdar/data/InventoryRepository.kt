@@ -43,19 +43,23 @@ class InventoryRepository(private val database: AppDatabase) {
     }
 
     /**
-     * ویرایش مشخصات کاتالوگ. موجودی فعلی از نسخه موجود در دیتابیس حفظ می‌شود تا ویرایش فرم
-     * نتواند کارتکس را دور بزند و موجودی را بدون سند تغییر دهد.
+     * ویرایش مشخصات کاتالوگ.
+     * موجودی فعلی همیشه حفظ می‌شود و نوع «کالا/خدمت» پس از ایجاد قابل تغییر نیست، چون تغییر نوع
+     * می‌تواند تاریخچه کارتکس و بهای تمام‌شده اسناد قبلی را نامعتبر کند.
      */
     suspend fun updateCatalog(updated: ProductEntity) = database.withTransaction {
         val current = database.productDao().getById(updated.id) ?: error("کالا پیدا نشد.")
         require(updated.name.isNotBlank()) { "نام کالا یا خدمت الزامی است." }
         require(updated.buyPrice >= 0 && updated.sellPrice >= 0) { "قیمت نمی‌تواند منفی باشد." }
         require(updated.minStock >= 0) { "حداقل موجودی نمی‌تواند منفی باشد." }
+        require(updated.isService == current.isService) {
+            "نوع کالا/خدمت پس از ثبت قابل تغییر نیست؛ برای نوع جدید یک مورد جداگانه بسازید."
+        }
 
         database.productDao().update(
             updated.copy(
-                stock = if (updated.isService) 0 else current.stock,
-                minStock = if (updated.isService) 0 else updated.minStock,
+                stock = current.stock,
+                minStock = if (current.isService) 0 else updated.minStock,
                 unit = updated.unit.ifBlank { "عدد" }
             )
         )
