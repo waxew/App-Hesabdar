@@ -12,6 +12,7 @@ import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.Update
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
@@ -144,10 +145,15 @@ interface PersonDao {
     suspend fun insert(person: PersonEntity): Long
 }
 
+/** DAO کاتالوگ کالا/خدمت و موجودی. */
 @Dao
 interface ProductDao {
     @Query("SELECT * FROM products ORDER BY id DESC")
     fun observeAll(): Flow<List<ProductEntity>>
+
+    /** نسخه Flow برای صفحه جزئیات تا بعد از اصلاح موجودی یا ویرایش، UI فوراً تازه شود. */
+    @Query("SELECT * FROM products WHERE id = :id LIMIT 1")
+    fun observeById(id: Long): Flow<ProductEntity?>
 
     @Query("SELECT * FROM products WHERE id = :id LIMIT 1")
     suspend fun getById(id: Long): ProductEntity?
@@ -158,6 +164,11 @@ interface ProductDao {
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insert(product: ProductEntity): Long
 
+    /** ویرایش مشخصات کالا بدون دستکاری مستقیم کارتکس. */
+    @Update
+    suspend fun update(product: ProductEntity)
+
+    /** تغییر موجودی فقط توسط Repositoryهای انبار/فاکتور فراخوانی می‌شود. */
     @Query("UPDATE products SET stock = stock + :delta WHERE id = :productId")
     suspend fun adjustStock(productId: Long, delta: Long)
 }
