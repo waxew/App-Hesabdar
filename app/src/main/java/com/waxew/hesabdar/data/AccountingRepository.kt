@@ -119,6 +119,9 @@ class AccountingRepository(private val database: AppDatabase) {
             shippingAmount = charges.shippingAmount
         )
         val estimatedCost = resolved.fold(0L) { acc, row -> Math.addExact(acc, row.estimatedCost) }
+        val goodsSubtotal = resolved.filterNot { it.product.isService }.fold(0L) { acc, row -> Math.addExact(acc, row.lineTotal) }
+        val serviceSubtotal = resolved.filter { it.product.isService }.fold(0L) { acc, row -> Math.addExact(acc, row.lineTotal) }
+
         require(settlementAmount <= totals.grandTotal) { "مبلغ تسویه نمی‌تواند از مبلغ نهایی فاکتور بیشتر باشد." }
 
         val invoiceId = database.invoiceDao().insertInvoice(
@@ -177,13 +180,15 @@ class AccountingRepository(private val database: AppDatabase) {
             )
         }
 
-        // در این نسخه سند خودکار بر مبلغ نهایی فاکتور ثبت می‌شود؛ حساب‌های مالیات و حمل در نسخه بعد تفکیک می‌شوند.
+        // موتور سند خودکار اجزای فاکتور را تفکیک می‌کند: فروش/خرید، مالیات، حمل و خدمت.
         AutomaticJournalEngine(database).postInvoiceJournal(
             invoiceId = invoiceId,
             type = type,
-            total = totals.grandTotal,
+            totals = totals,
             settlement = settlementAmount,
-            estimatedCost = if (type == "PURCHASE" || type == "PURCHASE_RETURN") 0 else estimatedCost
+            estimatedCost = if (type == "PURCHASE" || type == "PURCHASE_RETURN") 0 else estimatedCost,
+            goodsSubtotal = goodsSubtotal,
+            serviceSubtotal = serviceSubtotal
         )
 
         database.auditDao().insert(
