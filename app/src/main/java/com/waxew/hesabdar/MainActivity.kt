@@ -313,12 +313,13 @@ private fun ContactScreen(modifier: Modifier = Modifier) {
     }
 }
 
+/** درباره نرم‌افزار از BuildConfig نسخه واقعی Build را می‌خواند تا با Gradle ناسازگار نشود. */
 @Composable
 private fun AboutScreen(modifier: Modifier = Modifier) {
     Column(modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("حسابدار", style = MaterialTheme.typography.headlineMedium)
         Text("نرم‌افزار حسابداری فارسی و آفلاین برای مدیریت فروش، خرید، اشخاص، کالا و خدمت، انبار، خزانه، چک، اقساط و گزارش‌های مالی.")
-        Text("نسخه 0.10.0 Beta")
+        Text("نسخه ${BuildConfig.VERSION_NAME}")
         Text("اطلاعات اصلی برنامه در دیتابیس محلی دستگاه ذخیره می‌شوند.")
     }
 }
