@@ -13,7 +13,10 @@ class AdvancedAccountingRepository(private val database: AppDatabase) {
         id
     }
 
-    /** دریافت یا پرداخت مستقل؛ همزمان گردش خزانه، Payment، سند دوبل و Audit می‌سازد. */
+    /**
+     * دریافت یا پرداخت مستقل؛ همزمان گردش خزانه، Payment، سند دوبل و Audit می‌سازد.
+     * حساب صندوق/بانک اجباری است تا هیچ تراکنش مالی بدون محل نگهداری وجه ثبت نشود.
+     */
     suspend fun postStandalonePayment(
         direction: String,
         personId: Long?,
@@ -23,6 +26,7 @@ class AdvancedAccountingRepository(private val database: AppDatabase) {
     ): Long = database.withTransaction {
         require(direction == "RECEIVE" || direction == "PAY") { "نوع عملیات مالی نامعتبر است." }
         require(amount > 0) { "مبلغ باید بیشتر از صفر باشد." }
+        val resolvedTreasuryId = requireActiveTreasury(treasuryAccountId)
 
         val paymentId = database.paymentDao().insert(
             PaymentEntity(direction = direction, personId = personId, amount = amount, note = note.trim())
@@ -30,20 +34,22 @@ class AdvancedAccountingRepository(private val database: AppDatabase) {
         val entryId = database.cashEntryDao().insert(
             CashEntryEntity(
                 kind = direction,
-                treasuryAccountId = treasuryAccountId,
+                treasuryAccountId = resolvedTreasuryId,
                 personId = personId,
                 amount = amount,
-                note = note.trim()
+                note = note.trim(),
+                sourceType = "PAYMENT",
+                sourceId = paymentId
             )
         )
-        AutomaticJournalEngine(database).postCashEntryJournal(entryId, direction, amount)
+        AutomaticJournalEngine(database).postCashEntryJournal(entryId, direction, amount, resolvedTreasuryId)
         database.auditDao().insert(
             AuditLogEntity(action = "POST", entityType = "PAYMENT", entityId = paymentId, detail = "$direction مبلغ $amount - سند خودکار ثبت شد")
         )
         paymentId
     }
 
-    /** هزینه یا درآمد غیر فاکتوری با سند دوبل خودکار. */
+    /** هزینه یا درآمد غیر فاکتوری با سند دوبل خودکار و حساب خزانه اجباری. */
     suspend fun postCashEntry(
         kind: String,
         treasuryAccountId: Long?,
@@ -53,10 +59,18 @@ class AdvancedAccountingRepository(private val database: AppDatabase) {
     ): Long = database.withTransaction {
         require(kind == "INCOME" || kind == "EXPENSE") { "نوع ثبت باید درآمد یا هزینه باشد." }
         require(amount > 0) { "مبلغ باید بیشتر از صفر باشد." }
+        val resolvedTreasuryId = requireActiveTreasury(treasuryAccountId)
         val id = database.cashEntryDao().insert(
-            CashEntryEntity(kind = kind, treasuryAccountId = treasuryAccountId, amount = amount, category = category.trim(), note = note.trim())
+            CashEntryEntity(
+                kind = kind,
+                treasuryAccountId = resolvedTreasuryId,
+                amount = amount,
+                category = category.trim(),
+                note = note.trim(),
+                sourceType = kind
+            )
         )
-        AutomaticJournalEngine(database).postCashEntryJournal(id, kind, amount)
+        AutomaticJournalEngine(database).postCashEntryJournal(id, kind, amount, resolvedTreasuryId)
         database.auditDao().insert(
             AuditLogEntity(action = "POST", entityType = kind, entityId = id, detail = "${category.trim()} - $amount - سند خودکار ثبت شد")
         )
@@ -113,6 +127,10 @@ class AdvancedAccountingRepository(private val database: AppDatabase) {
         database.auditDao().insert(AuditLogEntity(action = "STATUS_CHANGE", entityType = "CHECK", entityId = checkId, detail = status))
     }
 
+    /**
+     * ساخت اقساط مساوی. تعداد اقساط نمی‌تواند از کوچک‌ترین واحد مبلغ بیشتر باشد،
+     * چون در آن حالت قسط صفر ایجاد می‌شود و هیچ‌وقت قابل تسویه نخواهد بود.
+     */
     suspend fun createInstallments(
         personId: Long?,
         invoiceId: Long?,
@@ -123,11 +141,15 @@ class AdvancedAccountingRepository(private val database: AppDatabase) {
         require(title.isNotBlank()) { "عنوان اقساط الزامی است." }
         require(totalAmount > 0) { "مبلغ اقساط باید بیشتر از صفر باشد." }
         require(dueDates.isNotEmpty()) { "حداقل یک سررسید لازم است." }
+        require(dueDates.all { it > 0 }) { "یکی از تاریخ‌های سررسید نامعتبر است." }
+        require(totalAmount >= dueDates.size.toLong()) { "مبلغ کل برای تعداد اقساط انتخاب‌شده کافی نیست." }
+
         val base = totalAmount / dueDates.size
         val remainder = totalAmount % dueDates.size
         val ids = mutableListOf<Long>()
         dueDates.forEachIndexed { index, dueAt ->
             val value = base + if (index == dueDates.lastIndex) remainder else 0
+            require(value > 0) { "مبلغ هر قسط باید بیشتر از صفر باشد." }
             ids += database.installmentDao().insert(
                 InstallmentEntity(personId = personId, invoiceId = invoiceId, title = if (dueDates.size == 1) title else "$title - قسط ${index + 1}", amount = value, dueAt = dueAt)
             )
@@ -136,11 +158,23 @@ class AdvancedAccountingRepository(private val database: AppDatabase) {
         ids
     }
 
+    /** پرداخت قسط بدون سرریز یا ثبت مبلغ بیشتر از مانده. */
     suspend fun payInstallment(installment: InstallmentEntity, amount: Long) = database.withTransaction {
+        val remaining = installment.amount - installment.paidAmount
+        require(remaining > 0) { "این قسط قبلاً تسویه شده است." }
         require(amount > 0) { "مبلغ پرداخت باید بیشتر از صفر باشد." }
-        val newPaid = (installment.paidAmount + amount).coerceAtMost(installment.amount)
-        val status = if (newPaid >= installment.amount) "PAID" else "PARTIAL"
+        require(amount <= remaining) { "مبلغ پرداخت نمی‌تواند از مانده قسط بیشتر باشد." }
+        val newPaid = Math.addExact(installment.paidAmount, amount)
+        val status = if (newPaid == installment.amount) "PAID" else "PARTIAL"
         database.installmentDao().updatePayment(installment.id, newPaid, status)
         database.auditDao().insert(AuditLogEntity(action = "PAY", entityType = "INSTALLMENT", entityId = installment.id, detail = "پرداخت $amount، جمع پرداخت $newPaid"))
+    }
+
+    /** اعتبارسنجی یک حساب فعال خزانه و برگرداندن ID قطعی آن. */
+    private suspend fun requireActiveTreasury(treasuryAccountId: Long?): Long {
+        val id = requireNotNull(treasuryAccountId) { "ابتدا یک صندوق یا حساب بانکی انتخاب کنید." }
+        val account = database.treasuryDao().getById(id) ?: error("حساب خزانه انتخاب‌شده پیدا نشد.")
+        require(account.isActive) { "حساب خزانه انتخاب‌شده غیرفعال است." }
+        return id
     }
 }
