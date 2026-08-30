@@ -31,6 +31,14 @@ jobs:
         with:
           gradle-version: "8.9"
 
+      # جدیدترین Build Tools نصب‌شده روی Runner برای zipalign و apksigner استفاده می‌شود.
+      - name: Resolve Android Build Tools
+        run: |
+          BUILD_TOOLS_DIR=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)
+          test -x "$BUILD_TOOLS_DIR/zipalign"
+          test -x "$BUILD_TOOLS_DIR/apksigner"
+          echo "ANDROID_BUILD_TOOLS_DIR=$BUILD_TOOLS_DIR" >> "$GITHUB_ENV"
+
       - name: Run unit tests
         run: gradle :app:testDebugUnitTest --stacktrace
 
@@ -48,30 +56,15 @@ jobs:
       - name: Build unsigned release APK
         run: gradle :app:assembleRelease --stacktrace
 
+      # APK قبل از امضا باید برای فایل‌های native و Page Size جدید Android به‌درستی Align شده باشد.
+      - name: Verify release alignment
+        run: "$ANDROID_BUILD_TOOLS_DIR/zipalign" -c -P 16 -v 4 app/build/outputs/apk/release/app-release-unsigned.apk
+
       - name: Upload unsigned release APK
         uses: actions/upload-artifact@v4
         with:
           name: App-Hesabdar-v1.0.0-release-unsigned
           path: app/build/outputs/apk/release/app-release-unsigned.apk
-          if-no-files-found: error
-
-      # ابزار رسمی apksigner/zipalign از Android SDK خود Runner بسته‌بندی می‌شود؛ هیچ کلید خصوصی در این Artifact نیست.
-      - name: Package Android signing tools
-        run: |
-          BUILD_TOOLS_DIR=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)
-          test -x "$BUILD_TOOLS_DIR/apksigner"
-          test -x "$BUILD_TOOLS_DIR/zipalign"
-          test -f "$BUILD_TOOLS_DIR/lib/apksigner.jar"
-          mkdir -p "$RUNNER_TEMP/hesabdar-signing-tools/lib"
-          cp "$BUILD_TOOLS_DIR/apksigner" "$RUNNER_TEMP/hesabdar-signing-tools/"
-          cp "$BUILD_TOOLS_DIR/zipalign" "$RUNNER_TEMP/hesabdar-signing-tools/"
-          cp "$BUILD_TOOLS_DIR/lib/apksigner.jar" "$RUNNER_TEMP/hesabdar-signing-tools/lib/"
-
-      - name: Upload Android signing tools
-        uses: actions/upload-artifact@v4
-        with:
-          name: App-Hesabdar-android-signing-tools
-          path: ${{ runner.temp }}/hesabdar-signing-tools
           if-no-files-found: error
 
       # Keystore خصوصی داخل Repository قرار نمی‌گیرد. این مرحله فقط در صورت تنظیم هر چهار Secret اجرا می‌شود.
@@ -88,6 +81,10 @@ jobs:
           HESABDAR_KEY_ALIAS: ${{ env.RELEASE_KEY_ALIAS }}
           HESABDAR_KEY_PASSWORD: ${{ env.RELEASE_KEY_PASSWORD }}
         run: gradle :app:assembleRelease --stacktrace
+
+      - name: Verify signed release APK
+        if: ${{ env.RELEASE_KEYSTORE_BASE64 != '' && env.RELEASE_KEYSTORE_PASSWORD != '' && env.RELEASE_KEY_ALIAS != '' && env.RELEASE_KEY_PASSWORD != '' }}
+        run: "$ANDROID_BUILD_TOOLS_DIR/apksigner" verify --verbose --print-certs app/build/outputs/apk/release/app-release.apk
 
       - name: Upload signed release APK
         if: ${{ env.RELEASE_KEYSTORE_BASE64 != '' && env.RELEASE_KEYSTORE_PASSWORD != '' && env.RELEASE_KEY_ALIAS != '' && env.RELEASE_KEY_PASSWORD != '' }}
