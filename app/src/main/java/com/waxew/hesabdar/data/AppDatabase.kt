@@ -31,7 +31,7 @@ data class PersonEntity(
 
 /**
  * کالای قابل فروش یا خدمت.
- * defaultValueهای Room دقیقاً با Migration نسخه 3 به 4 یکسان نگه داشته شده‌اند تا Upgrade معتبر بماند.
+ * defaultValueهای Room دقیقاً با Migrationها یکسان نگه داشته شده‌اند تا Upgrade معتبر بماند.
  */
 @Entity(tableName = "products", indices = [Index("sku"), Index("barcode")])
 data class ProductEntity(
@@ -255,7 +255,7 @@ interface DashboardDao {
 
 /**
  * دیتابیس اصلی حسابدار.
- * نسخه 5 چرخه عمر سند، شماره‌گذاری پایدار و Snapshot بهای تاریخی را اضافه می‌کند.
+ * نسخه 6 اتصال قابل ردیابی گردش خزانه به منبع اصلی را اضافه می‌کند.
  */
 @Database(
     entities = [
@@ -275,7 +275,7 @@ interface DashboardDao {
         AuditLogEntity::class,
         DocumentSequenceEntity::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -395,10 +395,23 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * نسخه 5 -> 6: اتصال گردش خزانه به منبع اصلی.
+         * هیچ ردیفی حذف یا بازسازی نمی‌شود؛ داده‌های قدیمی منبع خالی دارند و ردیف‌های جدید قابل ردیابی هستند.
+         */
+        private val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `cash_entries` ADD COLUMN `sourceType` TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE `cash_entries` ADD COLUMN `sourceId` INTEGER")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_cash_entries_sourceId` ON `cash_entries` (`sourceId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_cash_entries_sourceType_sourceId` ON `cash_entries` (`sourceType`, `sourceId`)")
+            }
+        }
+
         /** ساخت Singleton دیتابیس با تمام Migrationهای غیرمخرب. */
         fun get(context: Context): AppDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(context.applicationContext, AppDatabase::class.java, "hesabdar.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                 .build()
                 .also { instance = it }
         }

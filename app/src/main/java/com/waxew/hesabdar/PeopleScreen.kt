@@ -1,5 +1,6 @@
 package com.waxew.hesabdar
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -36,6 +37,8 @@ import java.util.Locale
 fun PeopleScreen(database: AppDatabase, persons: List<PersonEntity>, modifier: Modifier = Modifier) {
     var selected by remember { mutableStateOf<PersonEntity?>(null) }
     if (selected != null) {
+        // کلید Back سیستم باید ابتدا از جزئیات شخص به فهرست اشخاص برگردد، نه اینکه اپ را ترک کند.
+        BackHandler { selected = null }
         PersonProfileScreen(database, selected!!, onBack = { selected = null }, modifier = modifier)
         return
     }

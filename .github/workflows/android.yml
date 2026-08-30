@@ -2,8 +2,16 @@ name: Android APK
 
 on:
   push:
-    branches: ["main", "develop-v1"]
+    branches: ["main", "develop-v1", "release-v1"]
+  pull_request:
+    branches: ["main"]
   workflow_dispatch:
+
+env:
+  RELEASE_KEYSTORE_BASE64: ${{ secrets.HESABDAR_RELEASE_KEYSTORE_BASE64 }}
+  RELEASE_KEYSTORE_PASSWORD: ${{ secrets.HESABDAR_RELEASE_KEYSTORE_PASSWORD }}
+  RELEASE_KEY_ALIAS: ${{ secrets.HESABDAR_RELEASE_KEY_ALIAS }}
+  RELEASE_KEY_PASSWORD: ${{ secrets.HESABDAR_RELEASE_KEY_PASSWORD }}
 
 jobs:
   build:
@@ -23,15 +31,67 @@ jobs:
         with:
           gradle-version: "8.9"
 
+      # جدیدترین Build Tools نصب‌شده روی Runner برای zipalign و apksigner استفاده می‌شود.
+      - name: Resolve Android Build Tools
+        run: |
+          BUILD_TOOLS_DIR=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)
+          test -x "$BUILD_TOOLS_DIR/zipalign"
+          test -x "$BUILD_TOOLS_DIR/apksigner"
+          echo "ANDROID_BUILD_TOOLS_DIR=$BUILD_TOOLS_DIR" >> "$GITHUB_ENV"
+
       - name: Run unit tests
         run: gradle :app:testDebugUnitTest --stacktrace
 
-      - name: Build debug APK
+      - name: Build installable debug APK
         run: gradle :app:assembleDebug --stacktrace
 
-      - name: Upload APK
+      - name: Upload stable test APK
         uses: actions/upload-artifact@v4
         with:
-          name: App-Hesabdar-v0.11.0-beta-debug
+          name: App-Hesabdar-v1.0.0-debug
           path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+      # همیشه نسخه Release بدون امضا ساخته می‌شود تا خروجی Production از تنظیمات Debug مستقل باشد.
+      - name: Build unsigned release APK
+        run: gradle :app:assembleRelease --stacktrace
+
+      # APK قبل از امضا باید برای فایل‌های native و Page Size جدید Android به‌درستی Align شده باشد.
+      - name: Verify release alignment
+        run: |
+          "$ANDROID_BUILD_TOOLS_DIR/zipalign" -c -P 16 -v 4 app/build/outputs/apk/release/app-release-unsigned.apk
+
+      - name: Upload unsigned release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: App-Hesabdar-v1.0.0-release-unsigned
+          path: app/build/outputs/apk/release/app-release-unsigned.apk
+          if-no-files-found: error
+
+      # Keystore خصوصی داخل Repository قرار نمی‌گیرد. این مرحله فقط در صورت تنظیم هر چهار Secret اجرا می‌شود.
+      - name: Prepare release keystore
+        if: ${{ env.RELEASE_KEYSTORE_BASE64 != '' && env.RELEASE_KEYSTORE_PASSWORD != '' && env.RELEASE_KEY_ALIAS != '' && env.RELEASE_KEY_PASSWORD != '' }}
+        run: |
+          echo "$RELEASE_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/hesabdar-release.jks"
+
+      - name: Build signed release APK
+        if: ${{ env.RELEASE_KEYSTORE_BASE64 != '' && env.RELEASE_KEYSTORE_PASSWORD != '' && env.RELEASE_KEY_ALIAS != '' && env.RELEASE_KEY_PASSWORD != '' }}
+        env:
+          HESABDAR_KEYSTORE_PATH: ${{ runner.temp }}/hesabdar-release.jks
+          HESABDAR_KEYSTORE_PASSWORD: ${{ env.RELEASE_KEYSTORE_PASSWORD }}
+          HESABDAR_KEY_ALIAS: ${{ env.RELEASE_KEY_ALIAS }}
+          HESABDAR_KEY_PASSWORD: ${{ env.RELEASE_KEY_PASSWORD }}
+        run: gradle :app:assembleRelease --stacktrace
+
+      - name: Verify signed release APK
+        if: ${{ env.RELEASE_KEYSTORE_BASE64 != '' && env.RELEASE_KEYSTORE_PASSWORD != '' && env.RELEASE_KEY_ALIAS != '' && env.RELEASE_KEY_PASSWORD != '' }}
+        run: |
+          "$ANDROID_BUILD_TOOLS_DIR/apksigner" verify --verbose --print-certs app/build/outputs/apk/release/app-release.apk
+
+      - name: Upload signed release APK
+        if: ${{ env.RELEASE_KEYSTORE_BASE64 != '' && env.RELEASE_KEYSTORE_PASSWORD != '' && env.RELEASE_KEY_ALIAS != '' && env.RELEASE_KEY_PASSWORD != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: App-Hesabdar-v1.0.0-release
+          path: app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error

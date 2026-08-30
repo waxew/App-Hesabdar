@@ -1,5 +1,6 @@
 package com.waxew.hesabdar.data
 
+import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Entity
 import androidx.room.ForeignKey
@@ -93,8 +94,21 @@ data class InstallmentEntity(
     val createdAt: Long = System.currentTimeMillis()
 )
 
-/** هزینه یا درآمد غیر فاکتوری. */
-@Entity(tableName = "cash_entries", indices = [Index("treasuryAccountId"), Index("personId")])
+/**
+ * گردش صندوق/بانک.
+ *
+ * sourceType/sourceId از نسخه 1.0 اضافه شده‌اند تا هر حرکت خزانه به منبع اصلی خود مثل فاکتور،
+ * ابطال فاکتور یا دریافت/پرداخت مستقل وصل باشد. این اتصال برای Reversal، گزارش و Audit ضروری است.
+ */
+@Entity(
+    tableName = "cash_entries",
+    indices = [
+        Index("treasuryAccountId"),
+        Index("personId"),
+        Index("sourceId"),
+        Index(value = ["sourceType", "sourceId"])
+    ]
+)
 data class CashEntryEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val kind: String,
@@ -103,7 +117,9 @@ data class CashEntryEntity(
     val amount: Long,
     val category: String = "",
     val note: String = "",
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+    @ColumnInfo(defaultValue = "''") val sourceType: String = "",
+    val sourceId: Long? = null
 )
 
 /** ثبت وقایع حساس برای Audit Trail. */
@@ -122,9 +138,17 @@ interface TreasuryDao {
     @Query("SELECT * FROM treasury_accounts WHERE isActive = 1 ORDER BY id")
     fun observeAccounts(): Flow<List<TreasuryAccountEntity>>
 
+    /** دریافت مستقیم حساب برای اعتبارسنجی عملیات مالی و انتخاب حساب دفتر (صندوق/بانک). */
+    @Query("SELECT * FROM treasury_accounts WHERE id=:accountId LIMIT 1")
+    suspend fun getById(accountId: Long): TreasuryAccountEntity?
+
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertAccount(account: TreasuryAccountEntity): Long
 
+    /**
+     * مانده خزانه فقط از گردش‌های تخصیص‌یافته همان حساب محاسبه می‌شود.
+     * RECEIVE و INCOME ورودی و PAY و EXPENSE خروجی هستند.
+     */
     @Query("SELECT COALESCE((SELECT openingBalance FROM treasury_accounts WHERE id=:accountId),0) + COALESCE(SUM(CASE WHEN kind IN ('INCOME','RECEIVE') THEN amount ELSE -amount END),0) FROM cash_entries WHERE treasuryAccountId=:accountId")
     fun observeBalance(accountId: Long): Flow<Long>
 }
@@ -193,6 +217,10 @@ interface InstallmentDao {
 interface CashEntryDao {
     @Query("SELECT * FROM cash_entries ORDER BY createdAt DESC, id DESC")
     fun observeAll(): Flow<List<CashEntryEntity>>
+
+    /** تمام حرکات خزانه مربوط به یک منبع؛ برای ابطال امن سند استفاده می‌شود. */
+    @Query("SELECT * FROM cash_entries WHERE sourceType=:sourceType AND sourceId=:sourceId ORDER BY id")
+    suspend fun getForSource(sourceType: String, sourceId: Long): List<CashEntryEntity>
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insert(entry: CashEntryEntity): Long

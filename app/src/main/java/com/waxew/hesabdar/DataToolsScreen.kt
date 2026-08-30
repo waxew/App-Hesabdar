@@ -24,10 +24,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.waxew.hesabdar.data.AppDatabase
 import com.waxew.hesabdar.data.BackupManager
 import com.waxew.hesabdar.data.DataExportManager
+import com.waxew.hesabdar.data.PortableBackupManager
 import com.waxew.hesabdar.security.PinSecurityManager
 import com.waxew.hesabdar.settings.BusinessProfile
 import com.waxew.hesabdar.settings.BusinessSettings
@@ -100,25 +102,55 @@ private fun BusinessSection() {
     }
 }
 
-/** Backup، Restore و خروجی‌های فایل. */
+/**
+ * Backup، Restore و خروجی‌های فایل.
+ * Backup محلی سریع برای همین دستگاه و HDBX رمزگذاری‌شده برای انتقال امن بین دستگاه‌ها در دسترس است.
+ */
 @Composable
 private fun DataSection(database: AppDatabase) {
     val context = LocalContext.current
     val backupManager = remember(database) { BackupManager(context, database) }
+    val portableBackupManager = remember(database) { PortableBackupManager(context, database) }
     val exportManager = remember(database) { DataExportManager(context, database) }
     var message by remember { mutableStateOf("") }
     var refresh by remember { mutableStateOf(0) }
+    var backupPassword by remember { mutableStateOf("") }
     val backupDir = remember(refresh) { File(context.getExternalFilesDir(null) ?: context.filesDir, "backups") }
-    val backups = remember(refresh) { backupDir.listFiles()?.filter { it.isFile && it.extension == "hdb" }?.sortedByDescending { it.lastModified() }.orEmpty() }
+    val backups = remember(refresh) {
+        backupDir.listFiles()
+            ?.filter { it.isFile && (it.extension == "hdb" || it.extension == "hdbx") }
+            ?.sortedByDescending { it.lastModified() }
+            .orEmpty()
+    }
 
     LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        item { Text("پشتیبان‌گیری") }
         item {
             Button(onClick = {
                 runCatching { backupManager.createBackup() }
-                    .onSuccess { message = "Backup ساخته شد: ${it.name}"; refresh++ }
+                    .onSuccess { message = "Backup محلی ساخته شد: ${it.name}"; refresh++ }
                     .onFailure { message = it.message ?: "خطا در Backup" }
-            }, modifier = Modifier.fillMaxWidth()) { Text("ساخت Backup کامل محلی") }
+            }, modifier = Modifier.fillMaxWidth()) { Text("ساخت Backup محلی سریع") }
         }
+
+        item {
+            TextField(
+                value = backupPassword,
+                onValueChange = { backupPassword = it.take(128) },
+                label = { Text("رمز Backup قابل‌انتقال (حداقل ۸ کاراکتر)") },
+                visualTransformation = PasswordVisualTransformation(),
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+        item {
+            Button(onClick = {
+                runCatching { portableBackupManager.createEncryptedBackup(backupPassword) }
+                    .onSuccess { message = "Backup رمزگذاری‌شده ساخته شد: ${it.name}"; refresh++ }
+                    .onFailure { message = it.message ?: "خطا در Backup رمزگذاری‌شده" }
+            }, modifier = Modifier.fillMaxWidth()) { Text("ساخت Backup امن HDBX") }
+        }
+        item { Text("فایل HDBX با AES-GCM رمزگذاری می‌شود و روی دستگاه دیگر نیز با همین رمز قابل بازیابی است.") }
+
         item {
             Button(onClick = {
                 runCatching { exportManager.exportInvoicesCsv() }
@@ -134,9 +166,18 @@ private fun DataSection(database: AppDatabase) {
             }, modifier = Modifier.fillMaxWidth()) { Text("گزارش PDF خلاصه") }
         }
         if (message.isNotBlank()) item { Text(message) }
+
         item { Text("Backupهای موجود") }
         if (backups.isEmpty()) item { Text("هنوز Backup ساخته نشده است.") }
-        items(backups, key = { it.absolutePath }) { file -> BackupCard(file, backupManager) }
+        items(backups, key = { it.absolutePath }) { file ->
+            BackupCard(
+                file = file,
+                localManager = backupManager,
+                portableManager = portableBackupManager,
+                password = backupPassword,
+                onError = { message = it }
+            )
+        }
     }
 }
 
@@ -167,20 +208,36 @@ private fun SecuritySection() {
     }
 }
 
+/** کارت یک Backup؛ نوع فایل تعیین می‌کند Restore ساده یا رمزگشایی‌شده انجام شود. */
 @Composable
-private fun BackupCard(file: File, manager: BackupManager) {
+private fun BackupCard(
+    file: File,
+    localManager: BackupManager,
+    portableManager: PortableBackupManager,
+    password: String,
+    onError: (String) -> Unit
+) {
     val context = LocalContext.current
     val persianDate = remember(file.lastModified()) { PersianDateConverter.fromMillis(file.lastModified()).toString() }
+    val encrypted = file.extension == "hdbx"
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(file.name)
+            Text(if (encrypted) "نوع: رمزگذاری‌شده و قابل‌انتقال" else "نوع: محلی")
             Text("تاریخ: $persianDate")
             Text("${file.length() / 1024} KB")
             OutlinedButton(onClick = {
-                manager.restoreBackup(file)
-                (context as? Activity)?.finishAffinity()
-                Process.killProcess(Process.myPid())
-            }) { Text("بازیابی و بستن برنامه") }
+                runCatching {
+                    if (encrypted) portableManager.restoreEncryptedBackup(file, password)
+                    else localManager.restoreBackup(file)
+                }.onSuccess {
+                    // دیتابیس Singleton بعد از Restore باید در Process جدید باز شود.
+                    (context as? Activity)?.finishAffinity()
+                    Process.killProcess(Process.myPid())
+                }.onFailure { error ->
+                    onError(error.message ?: "خطا در بازیابی Backup")
+                }
+            }) { Text(if (encrypted) "بازیابی با رمز و راه‌اندازی مجدد" else "بازیابی و راه‌اندازی مجدد") }
         }
     }
 }
