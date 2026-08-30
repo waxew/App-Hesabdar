@@ -51,6 +51,7 @@ class LedgerBootstrapper(private val database: AppDatabase) {
 /**
  * موتور سند دوبل خودکار فاکتور و گردش نقدی.
  * مالیات و حمل از مبلغ اصلی فروش/خرید جدا می‌شوند تا گزارش سود و بدهی مالیاتی مخدوش نشود.
+ * هر تسویه نقدی/بانکی بر اساس حساب خزانه انتخاب‌شده به حساب سیستمی صحیح صندوق یا بانک می‌رود.
  */
 class AutomaticJournalEngine(private val database: AppDatabase) {
 
@@ -61,11 +62,16 @@ class AutomaticJournalEngine(private val database: AppDatabase) {
         settlement: Long,
         estimatedCost: Long,
         goodsSubtotal: Long,
-        serviceSubtotal: Long
+        serviceSubtotal: Long,
+        treasuryAccountId: Long? = null
     ): Long {
         LedgerBootstrapper(database).ensureDefaults()
 
-        val cash = account(SystemAccountCodes.CASH)
+        val settlementLedger = if (settlement > 0) {
+            treasuryLedgerAccount(requireNotNull(treasuryAccountId) { "برای تسویه، حساب صندوق یا بانک الزامی است." })
+        } else {
+            null
+        }
         val ar = account(SystemAccountCodes.RECEIVABLE)
         val vatReceivable = account(SystemAccountCodes.VAT_RECEIVABLE)
         val inventory = account(SystemAccountCodes.INVENTORY)
@@ -87,7 +93,7 @@ class AutomaticJournalEngine(private val database: AppDatabase) {
 
         when (type) {
             "SALE" -> {
-                if (settlement > 0) lines += line(cash.id, debit = settlement, text = "دریافت فروش")
+                if (settlement > 0) lines += line(settlementLedger!!.id, debit = settlement, text = "دریافت فروش")
                 if (remainder > 0) lines += line(ar.id, debit = remainder, text = "مطالبات فروش")
                 if (netBase > 0) lines += line(sales.id, credit = netBase, text = "فروش خالص پس از تخفیف")
                 if (totals.taxAmount > 0) lines += line(vatPayable.id, credit = totals.taxAmount, text = "مالیات فروش")
@@ -114,7 +120,7 @@ class AutomaticJournalEngine(private val database: AppDatabase) {
                     )
                 }
                 if (totals.taxAmount > 0) lines += line(vatReceivable.id, debit = totals.taxAmount, text = "مالیات خرید")
-                if (settlement > 0) lines += line(cash.id, credit = settlement, text = "پرداخت خرید")
+                if (settlement > 0) lines += line(settlementLedger!!.id, credit = settlement, text = "پرداخت خرید")
                 if (remainder > 0) lines += line(ap.id, credit = remainder, text = "بدهی خرید")
             }
 
@@ -122,7 +128,7 @@ class AutomaticJournalEngine(private val database: AppDatabase) {
                 if (netBase > 0) lines += line(salesReturn.id, debit = netBase, text = "برگشت از فروش خالص")
                 if (totals.taxAmount > 0) lines += line(vatPayable.id, debit = totals.taxAmount, text = "برگشت مالیات فروش")
                 if (totals.shippingAmount > 0) lines += line(shippingIncome.id, debit = totals.shippingAmount, text = "برگشت هزینه حمل")
-                if (settlement > 0) lines += line(cash.id, credit = settlement, text = "وجه عودتی")
+                if (settlement > 0) lines += line(settlementLedger!!.id, credit = settlement, text = "وجه عودتی")
                 if (remainder > 0) lines += line(ar.id, credit = remainder, text = "کاهش مطالبات")
                 if (estimatedCost > 0) {
                     lines += line(inventory.id, debit = estimatedCost, text = "بازگشت کالا به انبار")
@@ -131,7 +137,7 @@ class AutomaticJournalEngine(private val database: AppDatabase) {
             }
 
             "PURCHASE_RETURN" -> {
-                if (settlement > 0) lines += line(cash.id, debit = settlement, text = "دریافت وجه برگشت خرید")
+                if (settlement > 0) lines += line(settlementLedger!!.id, debit = settlement, text = "دریافت وجه برگشت خرید")
                 if (remainder > 0) lines += line(ap.id, debit = remainder, text = "کاهش بدهی تامین‌کننده")
                 if (goodsNet > 0 || (totals.shippingAmount > 0 && goodsSubtotal > 0)) {
                     lines += line(
@@ -163,21 +169,30 @@ class AutomaticJournalEngine(private val database: AppDatabase) {
     }
 
     /** ثبت خودکار اسناد درآمد، هزینه، دریافت و پرداخت مستقل. */
-    suspend fun postCashEntryJournal(entryId: Long, kind: String, amount: Long): Long {
+    suspend fun postCashEntryJournal(entryId: Long, kind: String, amount: Long, treasuryAccountId: Long): Long {
         LedgerBootstrapper(database).ensureDefaults()
-        val cash = account(SystemAccountCodes.CASH)
+        val treasury = treasuryLedgerAccount(treasuryAccountId)
         val expense = account(SystemAccountCodes.EXPENSE)
         val income = account(SystemAccountCodes.OTHER_INCOME)
         val ar = account(SystemAccountCodes.RECEIVABLE)
         val ap = account(SystemAccountCodes.PAYABLE)
         val lines = when (kind) {
-            "INCOME" -> listOf(line(cash.id, debit = amount), line(income.id, credit = amount))
-            "EXPENSE" -> listOf(line(expense.id, debit = amount), line(cash.id, credit = amount))
-            "RECEIVE" -> listOf(line(cash.id, debit = amount), line(ar.id, credit = amount))
-            "PAY" -> listOf(line(ap.id, debit = amount), line(cash.id, credit = amount))
+            "INCOME" -> listOf(line(treasury.id, debit = amount), line(income.id, credit = amount))
+            "EXPENSE" -> listOf(line(expense.id, debit = amount), line(treasury.id, credit = amount))
+            "RECEIVE" -> listOf(line(treasury.id, debit = amount), line(ar.id, credit = amount))
+            "PAY" -> listOf(line(ap.id, debit = amount), line(treasury.id, credit = amount))
             else -> error("نوع گردش نقدی نامعتبر است.")
         }
         return insertBalancedDocument("AUTO-CASH-$entryId", "سند خودکار گردش نقدی", kind, entryId, lines)
+    }
+
+    /** حساب خزانه عملیاتی را به حساب کل صندوق یا بانک نگاشت می‌کند. */
+    private suspend fun treasuryLedgerAccount(treasuryAccountId: Long): LedgerAccountEntity {
+        val treasury = database.treasuryDao().getById(treasuryAccountId)
+            ?: error("حساب صندوق یا بانک انتخاب‌شده پیدا نشد.")
+        require(treasury.isActive) { "حساب خزانه غیرفعال است." }
+        val code = if (treasury.type == "BANK") SystemAccountCodes.BANK else SystemAccountCodes.CASH
+        return account(code)
     }
 
     /** تقسیم صحیح و امن یک مبلغ بر اساس نسبت part/whole. */
