@@ -25,7 +25,7 @@ data class PostedInvoiceResult(
 
 /**
  * موتور ثبت خرید/فروش، مرجوعی و ابطال.
- * فاکتور، موجودی، تسویه، Audit و سند حسابداری خودکار داخل یک Transaction ثبت می‌شوند.
+ * فاکتور، موجودی، تسویه خزانه، Audit و سند حسابداری خودکار داخل یک Transaction ثبت می‌شوند.
  */
 class AccountingRepository(private val database: AppDatabase) {
 
@@ -34,39 +34,49 @@ class AccountingRepository(private val database: AppDatabase) {
         lines: List<InvoiceDraftLine>,
         paidAmount: Long,
         charges: InvoiceCharges = InvoiceCharges(),
-        note: String = ""
-    ) = postInventoryInvoice("SALE", personId, lines, paidAmount, charges, note)
+        note: String = "",
+        treasuryAccountId: Long? = null
+    ) = postInventoryInvoice("SALE", personId, lines, paidAmount, charges, note, treasuryAccountId)
 
     suspend fun postPurchase(
         personId: Long?,
         lines: List<InvoiceDraftLine>,
         paidAmount: Long,
         charges: InvoiceCharges = InvoiceCharges(),
-        note: String = ""
-    ) = postInventoryInvoice("PURCHASE", personId, lines, paidAmount, charges, note)
+        note: String = "",
+        treasuryAccountId: Long? = null
+    ) = postInventoryInvoice("PURCHASE", personId, lines, paidAmount, charges, note, treasuryAccountId)
 
     suspend fun postSaleReturn(
         personId: Long?,
         lines: List<InvoiceDraftLine>,
         refundAmount: Long = 0,
         charges: InvoiceCharges = InvoiceCharges(),
-        note: String = ""
-    ) = postInventoryInvoice("SALE_RETURN", personId, lines, refundAmount, charges, note)
+        note: String = "",
+        treasuryAccountId: Long? = null
+    ) = postInventoryInvoice("SALE_RETURN", personId, lines, refundAmount, charges, note, treasuryAccountId)
 
     suspend fun postPurchaseReturn(
         personId: Long?,
         lines: List<InvoiceDraftLine>,
         receivedAmount: Long = 0,
         charges: InvoiceCharges = InvoiceCharges(),
-        note: String = ""
-    ) = postInventoryInvoice("PURCHASE_RETURN", personId, lines, receivedAmount, charges, note)
+        note: String = "",
+        treasuryAccountId: Long? = null
+    ) = postInventoryInvoice("PURCHASE_RETURN", personId, lines, receivedAmount, charges, note, treasuryAccountId)
 
     /**
      * ابطال حرفه‌ای سند نهایی‌شده.
-     * اصل سند حذف یا بازنویسی نمی‌شود؛ یک سند معکوس کامل برای وجه، انبار و دفتر دوبل ایجاد می‌شود
-     * و سپس سند اولیه به VOIDED تغییر وضعیت می‌دهد.
+     * اصل سند حذف یا بازنویسی نمی‌شود؛ یک سند معکوس کامل برای وجه، انبار و دفتر دوبل ایجاد می‌شود.
+     *
+     * fallbackTreasuryAccountId فقط برای اسناد قدیمی Beta لازم است که پیش از Schema 6 تسویه آن‌ها به
+     * cash_entries متصل نبود. برای اسناد جدید حساب خزانه از گردش اصلی بازیابی می‌شود.
      */
-    suspend fun voidInvoice(invoiceId: Long, reason: String): PostedInvoiceResult = database.withTransaction {
+    suspend fun voidInvoice(
+        invoiceId: Long,
+        reason: String,
+        fallbackTreasuryAccountId: Long? = null
+    ): PostedInvoiceResult = database.withTransaction {
         require(reason.isNotBlank()) { "علت ابطال را وارد کنید." }
         val original = database.invoiceDao().getById(invoiceId) ?: error("فاکتور پیدا نشد.")
         require(original.status == "POSTED") { "فقط سند نهایی و ابطال‌نشده قابل ابطال است." }
@@ -76,6 +86,15 @@ class AccountingRepository(private val database: AppDatabase) {
 
         val originalItems = database.invoiceDao().getItems(invoiceId)
         require(originalItems.isNotEmpty()) { "ردیف‌های فاکتور برای ابطال پیدا نشد." }
+
+        // برای سندهای جدید خزانه از منبع اصلی پیدا می‌شود؛ اسناد قدیمی می‌توانند از انتخاب UI استفاده کنند.
+        val originalCashEntries = database.cashEntryDao().getForSource("INVOICE", original.id)
+        val reversalTreasuryId = if (original.paidAmount > 0) {
+            val linkedId = originalCashEntries.firstOrNull()?.treasuryAccountId
+            requireActiveTreasury(linkedId ?: fallbackTreasuryAccountId)
+        } else {
+            null
+        }
 
         val reverseType = if (original.type == "SALE") "SALE_RETURN" else "PURCHASE_RETURN"
         val reverseNumber = DocumentNumberGenerator(database).next(reverseType)
@@ -138,12 +157,7 @@ class AccountingRepository(private val database: AppDatabase) {
         )
 
         database.invoiceDao().insertItems(
-            reversalLines.map { row ->
-                row.item.copy(
-                    id = 0,
-                    invoiceId = reversalId
-                )
-            }
+            reversalLines.map { row -> row.item.copy(id = 0, invoiceId = reversalId) }
         )
 
         reversalLines.filter { it.stockDelta != 0L }.forEach { row ->
@@ -159,13 +173,25 @@ class AccountingRepository(private val database: AppDatabase) {
         }
 
         if (original.paidAmount > 0) {
+            val direction = if (original.type == "SALE") "PAY" else "RECEIVE"
             database.paymentDao().insert(
                 PaymentEntity(
-                    direction = if (original.type == "SALE") "PAY" else "RECEIVE",
+                    direction = direction,
                     invoiceId = reversalId,
                     personId = original.personId,
                     amount = original.paidAmount,
                     note = "برگشت تسویه بابت ابطال ${original.documentNumber}"
+                )
+            )
+            database.cashEntryDao().insert(
+                CashEntryEntity(
+                    kind = direction,
+                    treasuryAccountId = reversalTreasuryId,
+                    personId = original.personId,
+                    amount = original.paidAmount,
+                    note = "برگشت تسویه ${original.documentNumber} با $reverseNumber",
+                    sourceType = "INVOICE_REVERSAL",
+                    sourceId = reversalId
                 )
             )
         }
@@ -177,7 +203,8 @@ class AccountingRepository(private val database: AppDatabase) {
             settlement = original.paidAmount,
             estimatedCost = if (original.type == "SALE") estimatedCost else 0L,
             goodsSubtotal = goodsSubtotal,
-            serviceSubtotal = serviceSubtotal
+            serviceSubtotal = serviceSubtotal,
+            treasuryAccountId = reversalTreasuryId
         )
 
         val changed = database.invoiceDao().markVoided(
@@ -209,11 +236,13 @@ class AccountingRepository(private val database: AppDatabase) {
         lines: List<InvoiceDraftLine>,
         settlementAmount: Long,
         charges: InvoiceCharges,
-        note: String
+        note: String,
+        treasuryAccountId: Long?
     ): PostedInvoiceResult = database.withTransaction {
         require(type in setOf("SALE", "PURCHASE", "SALE_RETURN", "PURCHASE_RETURN")) { "نوع فاکتور نامعتبر است." }
         require(lines.isNotEmpty()) { "فاکتور باید حداقل یک ردیف داشته باشد." }
         require(settlementAmount >= 0) { "مبلغ تسویه نمی‌تواند منفی باشد." }
+        val resolvedTreasuryId = if (settlementAmount > 0) requireActiveTreasury(treasuryAccountId) else null
 
         val resolved = lines.map { draft ->
             require(draft.quantity > 0) { "تعداد هر ردیف باید بیشتر از صفر باشد." }
@@ -323,6 +352,17 @@ class AccountingRepository(private val database: AppDatabase) {
                     note = "تسویه هنگام ثبت $documentNumber"
                 )
             )
+            database.cashEntryDao().insert(
+                CashEntryEntity(
+                    kind = direction,
+                    treasuryAccountId = resolvedTreasuryId,
+                    personId = personId,
+                    amount = settlementAmount,
+                    note = "تسویه هنگام ثبت $documentNumber",
+                    sourceType = "INVOICE",
+                    sourceId = invoiceId
+                )
+            )
         }
 
         // موتور سند خودکار اجزای فاکتور را تفکیک می‌کند: فروش/خرید، مالیات، حمل و خدمت.
@@ -333,7 +373,8 @@ class AccountingRepository(private val database: AppDatabase) {
             settlement = settlementAmount,
             estimatedCost = if (type == "PURCHASE" || type == "PURCHASE_RETURN") 0 else estimatedCost,
             goodsSubtotal = goodsSubtotal,
-            serviceSubtotal = serviceSubtotal
+            serviceSubtotal = serviceSubtotal,
+            treasuryAccountId = resolvedTreasuryId
         )
 
         database.auditDao().insert(
@@ -346,6 +387,14 @@ class AccountingRepository(private val database: AppDatabase) {
         )
 
         PostedInvoiceResult(invoiceId, totals.grandTotal, documentNumber)
+    }
+
+    /** حساب خزانه را قبل از ایجاد هر اثر پولی اعتبارسنجی می‌کند. */
+    private suspend fun requireActiveTreasury(treasuryAccountId: Long?): Long {
+        val id = requireNotNull(treasuryAccountId) { "برای مبلغ تسویه، ابتدا صندوق یا حساب بانکی را انتخاب کنید." }
+        val account = database.treasuryDao().getById(id) ?: error("حساب خزانه انتخاب‌شده پیدا نشد.")
+        require(account.isActive) { "حساب خزانه انتخاب‌شده غیرفعال است." }
+        return id
     }
 
     private data class ResolvedLine(
