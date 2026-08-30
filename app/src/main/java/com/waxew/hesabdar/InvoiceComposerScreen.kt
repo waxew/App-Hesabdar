@@ -18,6 +18,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -53,6 +54,7 @@ private data class UiInvoiceLine(
 /**
  * فاکتور چندردیفی فروش، خرید و مرجوعی.
  * اسناد نهایی شماره پایدار دارند و فروش/خرید ثبت‌شده فقط با سند معکوس قابل ابطال است.
+ * هر مبلغ تسویه نیز به صندوق/بانک واقعی متصل می‌شود تا مانده خزانه با دفتر حسابداری هماهنگ بماند.
  */
 @Composable
 fun InvoiceComposerScreen(
@@ -68,10 +70,12 @@ fun InvoiceComposerScreen(
     val scope = rememberCoroutineScope()
     val formatter = remember { NumberFormat.getNumberInstance(Locale.US) }
     val cart = remember { mutableStateListOf<UiInvoiceLine>() }
+    val treasuryAccounts by database.treasuryDao().observeAccounts().collectAsState(initial = emptyList())
 
     var type by remember { mutableStateOf("SALE") }
     var personId by remember { mutableStateOf<Long?>(null) }
     var productId by remember { mutableStateOf<Long?>(null) }
+    var treasuryAccountId by remember { mutableStateOf<Long?>(null) }
     var productSearch by remember { mutableStateOf("") }
     var quantityText by remember { mutableStateOf("1") }
     var priceText by remember { mutableStateOf("") }
@@ -104,6 +108,7 @@ fun InvoiceComposerScreen(
     val discount = discountText.toLongOrNull() ?: 0L
     val taxPercent = taxPercentText.toIntOrNull() ?: 0
     val shipping = shippingText.toLongOrNull() ?: 0L
+    val settlementPreview = settlementText.toLongOrNull() ?: 0L
     val previewTotals = runCatching {
         InvoiceMath.calculate(subtotal, discount, taxPercent, shipping)
     }.getOrNull()
@@ -223,6 +228,25 @@ fun InvoiceComposerScreen(
         }
 
         item { TextField(settlementText, { settlementText = it.filter(Char::isDigit) }, label = { Text(settlementLabel(type)) }, modifier = Modifier.fillMaxWidth()) }
+
+        // هر تسویه باید به یک صندوق یا بانک متصل باشد؛ در حالت نسیه کامل انتخاب خزانه لازم نیست.
+        if (settlementPreview > 0) {
+            item { Text("محل تسویه") }
+            if (treasuryAccounts.isEmpty()) {
+                item { Text("برای ثبت تسویه ابتدا در بخش حسابداری حرفه‌ای یک صندوق یا حساب بانکی بسازید.") }
+            } else {
+                item {
+                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        treasuryAccounts.forEach { account ->
+                            OutlinedButton(onClick = { treasuryAccountId = account.id }) {
+                                Text(if (treasuryAccountId == account.id) "✓ ${account.name}" else account.name)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         item { TextField(note, { note = it }, label = { Text("توضیحات") }, modifier = Modifier.fillMaxWidth()) }
         item {
             Button(onClick = {
@@ -241,15 +265,19 @@ fun InvoiceComposerScreen(
 
                 val lines = cart.map { InvoiceDraftLine(it.product.id, it.quantity, it.unitPrice) }
                 val settlement = settlementText.toLongOrNull() ?: 0
+                if (settlement > 0 && treasuryAccountId == null) {
+                    message = "برای مبلغ تسویه، صندوق یا حساب بانکی را انتخاب کنید."
+                    return@Button
+                }
                 val charges = InvoiceCharges(discountAmount = discount, taxPercent = taxPercent, shippingAmount = shipping)
 
                 scope.launch {
                     runCatching {
                         when (type) {
-                            "SALE" -> repo.postSale(personId, lines, settlement, charges, note)
-                            "PURCHASE" -> repo.postPurchase(personId, lines, settlement, charges, note)
-                            "SALE_RETURN" -> repo.postSaleReturn(personId, lines, settlement, charges, note)
-                            else -> repo.postPurchaseReturn(personId, lines, settlement, charges, note)
+                            "SALE" -> repo.postSale(personId, lines, settlement, charges, note, treasuryAccountId)
+                            "PURCHASE" -> repo.postPurchase(personId, lines, settlement, charges, note, treasuryAccountId)
+                            "SALE_RETURN" -> repo.postSaleReturn(personId, lines, settlement, charges, note, treasuryAccountId)
+                            else -> repo.postPurchaseReturn(personId, lines, settlement, charges, note, treasuryAccountId)
                         }
                     }.onSuccess { result ->
                         message = "${typeFa(type)} ${result.documentNumber} به مبلغ ${formatter.format(result.totalAmount)} تومان ثبت شد."
@@ -306,6 +334,9 @@ fun InvoiceComposerScreen(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("این سند روی حساب‌ها و موجودی اثر گذاشته است. برنامه اصل سند را حذف نمی‌کند و یک سند معکوس ایجاد می‌کند.")
+                    if (invoiceToVoid.paidAmount > 0) {
+                        Text("اگر این فاکتور متعلق به نسخه‌های قدیمی Beta است، صندوق/بانک انتخاب‌شده بالا برای برگشت وجه استفاده می‌شود.")
+                    }
                     TextField(voidReason, { voidReason = it }, label = { Text("علت ابطال") }, modifier = Modifier.fillMaxWidth())
                 }
             },
@@ -318,7 +349,7 @@ fun InvoiceComposerScreen(
                     }
                     pendingVoid = null
                     scope.launch {
-                        runCatching { repo.voidInvoice(target.id, voidReason) }
+                        runCatching { repo.voidInvoice(target.id, voidReason, treasuryAccountId) }
                             .onSuccess { result ->
                                 message = "${target.documentNumber} با سند معکوس ${result.documentNumber} ابطال شد."
                                 voidReason = ""
