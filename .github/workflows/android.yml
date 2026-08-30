@@ -58,7 +58,8 @@ jobs:
 
       # APK قبل از امضا باید برای فایل‌های native و Page Size جدید Android به‌درستی Align شده باشد.
       - name: Verify release alignment
-        run: "$ANDROID_BUILD_TOOLS_DIR/zipalign" -c -P 16 -v 4 app/build/outputs/apk/release/app-release-unsigned.apk
+        run: |
+          "$ANDROID_BUILD_TOOLS_DIR/zipalign" -c -P 16 -v 4 app/build/outputs/apk/release/app-release-unsigned.apk
 
       - name: Upload unsigned release APK
         uses: actions/upload-artifact@v4
@@ -84,7 +85,8 @@ jobs:
 
       - name: Verify signed release APK
         if: ${{ env.RELEASE_KEYSTORE_BASE64 != '' && env.RELEASE_KEYSTORE_PASSWORD != '' && env.RELEASE_KEY_ALIAS != '' && env.RELEASE_KEY_PASSWORD != '' }}
-        run: "$ANDROID_BUILD_TOOLS_DIR/apksigner" verify --verbose --print-certs app/build/outputs/apk/release/app-release.apk
+        run: |
+          "$ANDROID_BUILD_TOOLS_DIR/apksigner" verify --verbose --print-certs app/build/outputs/apk/release/app-release.apk
 
       - name: Upload signed release APK
         if: ${{ env.RELEASE_KEYSTORE_BASE64 != '' && env.RELEASE_KEYSTORE_PASSWORD != '' && env.RELEASE_KEY_ALIAS != '' && env.RELEASE_KEY_PASSWORD != '' }}
