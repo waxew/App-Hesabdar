@@ -68,6 +68,21 @@ jobs:
           path: app/build/outputs/apk/release/app-release-unsigned.apk
           if-no-files-found: error
 
+      # سورس قابل تحویل بعد از Build بسته‌بندی می‌شود تا Schema خروجی Room نیز در بسته موجود باشد.
+      # فایل‌های Build، Cache و هر نوع Keystore عمداً از بسته حذف می‌شوند.
+      - name: Package complete source
+        run: |
+          zip -r "$RUNNER_TEMP/source.App-Hesabdar.v1.0.0.zip" . \
+            -x ".git/*" ".gradle/*" "build/*" "app/build/*" \
+               "*.apk" "*.aab" "*.jks" "*.keystore" "local.properties"
+
+      - name: Upload complete source
+        uses: actions/upload-artifact@v4
+        with:
+          name: source.App-Hesabdar.v1.0.0
+          path: ${{ runner.temp }}/source.App-Hesabdar.v1.0.0.zip
+          if-no-files-found: error
+
       # Keystore خصوصی داخل Repository قرار نمی‌گیرد. این مرحله فقط در صورت تنظیم هر چهار Secret اجرا می‌شود.
       - name: Prepare release keystore
         if: ${{ env.RELEASE_KEYSTORE_BASE64 != '' && env.RELEASE_KEYSTORE_PASSWORD != '' && env.RELEASE_KEY_ALIAS != '' && env.RELEASE_KEY_PASSWORD != '' }}
