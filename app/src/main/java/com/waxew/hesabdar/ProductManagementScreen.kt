@@ -1,5 +1,6 @@
 package com.waxew.hesabdar
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -45,6 +46,8 @@ fun ProductManagementScreen(
 ) {
     var selectedId by remember { mutableStateOf<Long?>(null) }
     if (selectedId != null) {
+        // Back سیستم ابتدا از جزئیات/کارتکس به فهرست کالا برمی‌گردد.
+        BackHandler { selectedId = null }
         InventoryCardScreen(database, selectedId!!, onBack = { selectedId = null }, modifier = modifier)
         return
     }
@@ -63,6 +66,7 @@ fun ProductManagementScreen(
     var message by remember { mutableStateOf("") }
 
     val scope = rememberCoroutineScope()
+    val inventoryRepository = remember(database) { InventoryRepository(database) }
     val formatter = remember { NumberFormat.getNumberInstance(Locale.US) }
     val lowStock by database.productDao().observeLowStock().collectAsState(initial = emptyList())
     val filtered = remember(products, search) {
@@ -119,7 +123,8 @@ fun ProductManagementScreen(
                     }
                     scope.launch {
                         runCatching {
-                            database.productDao().insert(
+                            // ثبت از Repository باعث می‌شود موجودی اولیه همزمان در کارتکس و Audit ثبت شود.
+                            inventoryRepository.createCatalogItem(
                                 ProductEntity(
                                     name = name.trim(),
                                     buyPrice = buy.toLongOrNull() ?: 0,
@@ -346,6 +351,7 @@ private fun InventoryCardScreen(
 
 /** تبدیل نوع فنی گردش انبار به عنوان فارسی قابل فهم. */
 private fun movementFa(type: String): String = when (type) {
+    "OPENING" -> "موجودی افتتاحیه"
     "SALE" -> "خروج بابت فروش"
     "PURCHASE" -> "ورود بابت خرید"
     "SALE_RETURN" -> "ورود بابت برگشت فروش"
