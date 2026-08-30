@@ -6,6 +6,7 @@ import android.graphics.BitmapFactory
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -148,6 +149,7 @@ private fun SecureRoot(database: AppDatabase) {
 private fun HesabdarApp(database: AppDatabase) {
     val context = LocalContext.current
     var tab by remember { mutableIntStateOf(0) }
+    var previousTab by remember { mutableIntStateOf(0) }
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val businessSettings = remember { BusinessSettings(context) }
@@ -179,9 +181,28 @@ private fun HesabdarApp(database: AppDatabase) {
     val otherIncome by database.cashEntryDao().observeOtherIncome().collectAsState(initial = 0L)
     val pendingChecks by database.checkDao().observePending().collectAsState(initial = emptyList())
 
+    /** تغییر صفحه همراه با نگهداری آخرین مقصد برای کلید Back. */
+    fun navigate(page: Int) {
+        if (page != tab) {
+            previousTab = tab
+            tab = page
+        }
+    }
+
     fun openPage(page: Int) {
-        tab = page
+        navigate(page)
         scope.launch { drawerState.close() }
+    }
+
+    /** ابتدا Drawer بسته می‌شود؛ سپس Back به صفحه قبلی برمی‌گردد و فقط در خانه اجازه خروج می‌دهد. */
+    BackHandler(enabled = drawerState.isOpen || tab != 0) {
+        if (drawerState.isOpen) {
+            scope.launch { drawerState.close() }
+        } else {
+            val destination = previousTab
+            previousTab = 0
+            tab = destination
+        }
     }
 
     ModalNavigationDrawer(
@@ -247,12 +268,12 @@ private fun HesabdarApp(database: AppDatabase) {
             bottomBar = {
                 if (tab <= 5) {
                     NavigationBar {
-                        NavigationBarItem(tab == 0, { tab = 0 }, { Icon(Icons.Default.Home, null) }, label = { Text("خانه") })
-                        NavigationBarItem(tab == 1, { tab = 1 }, { Icon(Icons.Default.People, null) }, label = { Text("اشخاص") })
-                        NavigationBarItem(tab == 2, { tab = 2 }, { Icon(Icons.Default.Inventory2, null) }, label = { Text("انبار") })
-                        NavigationBarItem(tab == 3, { tab = 3 }, { Icon(Icons.Default.AccountBalanceWallet, null) }, label = { Text("فاکتور") })
-                        NavigationBarItem(tab == 4, { tab = 4 }, { Icon(Icons.Default.AccountBalance, null) }, label = { Text("حسابداری") })
-                        NavigationBarItem(tab == 5, { tab = 5 }, { Icon(Icons.Default.Settings, null) }, label = { Text("ابزار") })
+                        NavigationBarItem(tab == 0, { navigate(0) }, { Icon(Icons.Default.Home, null) }, label = { Text("خانه") })
+                        NavigationBarItem(tab == 1, { navigate(1) }, { Icon(Icons.Default.People, null) }, label = { Text("اشخاص") })
+                        NavigationBarItem(tab == 2, { navigate(2) }, { Icon(Icons.Default.Inventory2, null) }, label = { Text("انبار") })
+                        NavigationBarItem(tab == 3, { navigate(3) }, { Icon(Icons.Default.AccountBalanceWallet, null) }, label = { Text("فاکتور") })
+                        NavigationBarItem(tab == 4, { navigate(4) }, { Icon(Icons.Default.AccountBalance, null) }, label = { Text("حسابداری") })
+                        NavigationBarItem(tab == 5, { navigate(5) }, { Icon(Icons.Default.Settings, null) }, label = { Text("ابزار") })
                     }
                 }
             }
