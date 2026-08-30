@@ -3,10 +3,52 @@ package com.waxew.hesabdar.data
 import androidx.room.withTransaction
 
 /**
- * عملیات دستی انبار خارج از فاکتور.
- * این Repository تضمین می‌کند اصلاح موجودی همزمان در موجودی کالا، کارتکس و Audit ثبت شود.
+ * عملیات کاتالوگ و انبار خارج از فاکتور.
+ * این Repository تضمین می‌کند موجودی، کارتکس و Audit همیشه با هم سازگار بمانند.
  */
 class InventoryRepository(private val database: AppDatabase) {
+
+    /**
+     * ساخت کالا یا خدمت.
+     * موجودی اولیه کالا علاوه بر فیلد stock به‌صورت OPENING در کارتکس ثبت می‌شود تا منشا موجودی قابل ردیابی باشد.
+     */
+    suspend fun createCatalogItem(item: ProductEntity): Long = database.withTransaction {
+        require(item.name.isNotBlank()) { "نام کالا یا خدمت الزامی است." }
+        require(item.buyPrice >= 0 && item.sellPrice >= 0) { "قیمت نمی‌تواند منفی باشد." }
+        require(item.stock >= 0) { "موجودی اولیه نمی‌تواند منفی باشد." }
+        require(item.minStock >= 0) { "حداقل موجودی نمی‌تواند منفی باشد." }
+
+        val normalized = item.copy(
+            id = 0,
+            name = item.name.trim(),
+            sku = item.sku.trim(),
+            barcode = item.barcode.trim(),
+            category = item.category.trim(),
+            unit = item.unit.trim().ifBlank { "عدد" },
+            stock = if (item.isService) 0 else item.stock,
+            minStock = if (item.isService) 0 else item.minStock
+        )
+        val id = database.productDao().insert(normalized)
+
+        if (!normalized.isService && normalized.stock > 0) {
+            database.inventoryDao().insert(
+                InventoryMovementEntity(
+                    productId = id,
+                    movementType = "OPENING",
+                    quantityDelta = normalized.stock
+                )
+            )
+        }
+        database.auditDao().insert(
+            AuditLogEntity(
+                action = "CREATE",
+                entityType = "PRODUCT",
+                entityId = id,
+                detail = "ایجاد ${if (normalized.isService) "خدمت" else "کالا"} ${normalized.name} با موجودی اولیه ${normalized.stock}"
+            )
+        )
+        id
+    }
 
     /**
      * اصلاح موجودی با delta مثبت برای افزایش و delta منفی برای کاهش.
