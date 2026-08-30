@@ -45,7 +45,6 @@ jobs:
           if-no-files-found: error
 
       # همیشه نسخه Release بدون امضا ساخته می‌شود تا خروجی Production از تنظیمات Debug مستقل باشد.
-      # امضای نهایی یا با Secrets زیر در CI انجام می‌شود یا خارج از Repository با Keystore خصوصی مالک برنامه.
       - name: Build unsigned release APK
         run: gradle :app:assembleRelease --stacktrace
 
@@ -54,6 +53,25 @@ jobs:
         with:
           name: App-Hesabdar-v1.0.0-release-unsigned
           path: app/build/outputs/apk/release/app-release-unsigned.apk
+          if-no-files-found: error
+
+      # ابزار رسمی apksigner/zipalign از Android SDK خود Runner بسته‌بندی می‌شود؛ هیچ کلید خصوصی در این Artifact نیست.
+      - name: Package Android signing tools
+        run: |
+          BUILD_TOOLS_DIR=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)
+          test -x "$BUILD_TOOLS_DIR/apksigner"
+          test -x "$BUILD_TOOLS_DIR/zipalign"
+          test -f "$BUILD_TOOLS_DIR/lib/apksigner.jar"
+          mkdir -p "$RUNNER_TEMP/hesabdar-signing-tools/lib"
+          cp "$BUILD_TOOLS_DIR/apksigner" "$RUNNER_TEMP/hesabdar-signing-tools/"
+          cp "$BUILD_TOOLS_DIR/zipalign" "$RUNNER_TEMP/hesabdar-signing-tools/"
+          cp "$BUILD_TOOLS_DIR/lib/apksigner.jar" "$RUNNER_TEMP/hesabdar-signing-tools/lib/"
+
+      - name: Upload Android signing tools
+        uses: actions/upload-artifact@v4
+        with:
+          name: App-Hesabdar-android-signing-tools
+          path: ${{ runner.temp }}/hesabdar-signing-tools
           if-no-files-found: error
 
       # Keystore خصوصی داخل Repository قرار نمی‌گیرد. این مرحله فقط در صورت تنظیم هر چهار Secret اجرا می‌شود.
